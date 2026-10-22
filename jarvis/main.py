@@ -30,6 +30,10 @@ from jarvis.security.account import account_warning
 from jarvis.router_cmds import CommandRouter, normalize as normalize_command
 from jarvis.cache.answers import AnswerCache
 from jarvis.tools.app_control import APP_MAP
+from jarvis.brain.selector import BrainSelector, LocalBackup
+from jarvis.gpu import free_vram_gb, gpu_stats
+from jarvis.notify import Notifier
+from jarvis.tools import system as system_tools
 
 _MAX_TOOL_LOOPS = 15
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
@@ -132,6 +136,33 @@ with open(_CONFIG_PATH) as _f:
 _brain_cfg = _startup_cfg.get("brain") or {}
 _cache_cfg = _startup_cfg.get("cache") or {}
 
+brain_selector = BrainSelector(
+    limit_backoff_s=60 * float(_brain_cfg.get("limit_backoff_minutes", 15)),
+    error_backoff_s=60 * float(_brain_cfg.get("error_backoff_minutes", 2)),
+)
+local_backup = LocalBackup(
+    model=((_startup_cfg.get("llm") or {}).get("providers") or {}).get("ollama", {}).get("model", "qwen3:4b"),
+    keep_alive=str(_brain_cfg.get("backup_keep_alive", "5m")),
+    min_free_vram_gb=float(_brain_cfg.get("min_free_vram_gb_for_backup", 4)),
+    free_vram_gb=free_vram_gb,
+)
+notifier = Notifier(speak=_speak_if_unmuted, broadcast=_broadcast, is_busy=lambda: is_busy())
+
+
+def usage_snapshot() -> dict:
+    """For the HUD gauges: Claude use in the 5-hour / 7-day windows, today's budget, GPU, brain state."""
+    limits = {"5h": _brain_cfg.get("est_limit_5h_requests"), "7d": _brain_cfg.get("est_limit_7d_requests")}
+    return {
+        "five_hour": {**usage_tracker.window(5), "est_limit": limits["5h"]},
+        "seven_day": {**usage_tracker.window(24 * 7), "est_limit": limits["7d"]},
+        "today": usage_tracker.requests_on(),
+        "daily_budget": input_gate.daily_claude_budget,
+        "claude": brain_selector.snapshot(),
+        "backup_loaded": local_backup.loaded,
+        "gpu": gpu_stats(),
+    }
+
+
 command_router = CommandRouter(set(APP_MAP))
 answer_cache = AnswerCache(_cache_cfg.get("db", "data/cache.db"),
                            ttl_days=float((_cache_cfg.get("answers") or {}).get("ttl_days", 7)))
@@ -166,7 +197,8 @@ confirm_broker = ConfirmBroker(
 gatekeeper.confirmer = confirm_broker.ask
 gatekeeper.elevation.on_change = lambda active, remaining: _broadcast(
     {"type": "elevation", "active": active, "remaining_s": remaining})
-gatekeeper.elevation.on_expire = lambda: _speak_if_unmuted("Full access ended.")
+gatekeeper.elevation.on_expire = lambda: notifier.routine("Full access ended.")
+system_tools.on_timer_done = lambda message: notifier.urgent(f"Timer done: {message}.")
 
 
 def elevation_state() -> dict:
@@ -326,7 +358,8 @@ def _call_ollama_provider(provider_cfg: dict, temperature: float, full_messages:
     tool_count = 0
     for _ in range(_MAX_TOOL_LOOPS):
         _check_abort()
-        response = ollama.chat(model=model, messages=full_messages, tools=TOOL_SCHEMAS, think=think)
+        response = ollama.chat(model=model, messages=full_messages, tools=TOOL_SCHEMAS, think=think,
+                               keep_alive=provider_cfg.get("keep_alive", _brain_cfg.get("backup_keep_alive", "5m")))
         if response.message.tool_calls:
             full_messages.append(response.message.model_dump())
             for tc in response.message.tool_calls:
@@ -549,7 +582,27 @@ def _handle_without_brain(user_text: str, turn: TurnContext) -> str | None:
     return None
 
 
+_busy_count = 0
+_busy_lock = threading.Lock()
+
+
+def is_busy() -> bool:
+    """A request is running or Jarvis is speaking — routine notices wait for a pause."""
+    return _busy_count > 0 or is_speaking()
+
+
 def _process_request(user_text: str, source: str = "typed") -> str:
+    global _busy_count
+    with _busy_lock:
+        _busy_count += 1
+    try:
+        return _process_request_inner(user_text, source)
+    finally:
+        with _busy_lock:
+            _busy_count -= 1
+
+
+def _process_request_inner(user_text: str, source: str = "typed") -> str:
     """Build context, call LLM, update memory. Returns response text.
 
     source is who started the turn ("voice", "typed", or a background trigger);
@@ -589,13 +642,26 @@ def _process_request(user_text: str, source: str = "typed") -> str:
     facts = memory.search_facts(user_text)
     response_text = None
 
-    if uses_claude and not gate.use_local:
+    notice = ""
+    if brain_selector.choose(uses_claude, gate.use_local) == "claude":
         try:
             response_text = _call_claude_provider(provider, user_text, facts, turn)
+            if brain_selector.claude_ok():
+                local_backup.unload()  # Claude is back: free the GPU
         except _Aborted:
             raise
         except Exception as e:
             print(f"[WARN] Claude brain failed ({e}), using the local brain")
+            notice = brain_selector.claude_failed(e) or ""
+
+    if response_text is None and uses_claude:
+        # Backup mode: only load the local model if the GPU has room for it.
+        ok, why = local_backup.ready()
+        if not ok:
+            response_text = (f"Claude isn't available and {why}, so right now I can only do quick "
+                             "commands like opening apps, volume and timers.")
+        else:
+            local_backup.mark_used()
 
     if response_text is None:
         messages = context.get_messages()
@@ -624,6 +690,8 @@ def _process_request(user_text: str, source: str = "typed") -> str:
         answer_cache.put(user_text, response_text)
     if gate.notice:
         response_text = f"{response_text} {gate.notice}"
+    if notice:
+        response_text = f"{notice} {response_text}"
     memory.extract_and_store_facts(response_text, user_text)
 
     _broadcast({"type": "response", "text": response_text})
@@ -683,6 +751,8 @@ def main() -> None:
     threading.Thread(target=_keyboard_listener, daemon=True).start()
 
     webbrowser.open("http://localhost:7860")
+
+    notifier.start()
 
     warning = account_warning()
     if warning:

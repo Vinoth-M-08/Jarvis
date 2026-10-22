@@ -177,6 +177,14 @@ async def api_update_settings(request: Request):
     return JSONResponse({"status": "ok"})
 
 
+# ─── Usage / GPU gauges ───
+
+@app.get("/api/usage")
+async def api_usage():
+    from jarvis.main import usage_snapshot
+    return JSONResponse(usage_snapshot())
+
+
 # ─── Mute APIs ───
 
 @app.get("/api/mute")

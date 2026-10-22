@@ -25,6 +25,12 @@ brain:
   daily_claude_budget: 100
   warn_at_percent: 80
   usage_db: data/usage.db
+  limit_backoff_minutes: 15
+  error_backoff_minutes: 2
+  backup_keep_alive: 5m
+  min_free_vram_gb_for_backup: 4
+  est_limit_5h_requests: null
+  est_limit_7d_requests: null
 cache:
   db: data/cache.db
   answers:

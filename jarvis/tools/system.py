@@ -150,12 +150,15 @@ def show_notification(title: str, message: str) -> str:
 
 # --- Timer / Reminder ---
 _timers: list = []
+on_timer_done = None  # set by main.py: speaks the timer out loud (urgent notice)
 
 
 def set_timer(seconds: int, message: str = "Timer done!") -> str:
     """Set a timer that shows a notification after N seconds."""
     def _timer_cb():
         show_notification("Jarvis Timer", message)
+        if on_timer_done:
+            on_timer_done(message)
 
     t = threading.Timer(seconds, _timer_cb)
     t.daemon = True

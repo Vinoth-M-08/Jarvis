@@ -579,6 +579,21 @@
   }
   .elev-badge button:hover { background: var(--gold); color: var(--bg); }
 
+  /* Usage + GPU gauges */
+  .usage-gauges {
+    display: flex; align-items: center; gap: 10px; padding: 5px 10px;
+    border: 1px solid var(--glass-border); border-radius: var(--radius-sm); background: var(--glass);
+    font-family: 'Orbitron', monospace; font-size: 9px; letter-spacing: 1px; color: var(--text-dim);
+  }
+  .usage-gauges .g { display: flex; flex-direction: column; gap: 3px; min-width: 54px; }
+  .usage-gauges .g b { color: var(--text); font-weight: 500; }
+  .usage-gauges .bar { height: 3px; background: var(--glass-border); border-radius: 2px; overflow: hidden; }
+  .usage-gauges .fill { height: 100%; width: 0%; background: var(--cyan); transition: width 0.4s; }
+  .usage-gauges .fill.warn { background: var(--gold); }
+  .usage-gauges .fill.full { background: var(--red); }
+  .usage-gauges .state-limit, .usage-gauges .state-auth, .usage-gauges .state-unavailable { color: var(--gold); }
+  @media (max-width: 1100px) { .usage-gauges { display: none; } }
+
   /* ─── Particles ─── */
   .particles { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
   .particle {
@@ -646,6 +661,13 @@
     </div>
   </div>
   <div class="header-right">
+    <div class="usage-gauges" id="usageGauges" title="Claude use (counted by Jarvis) and GPU memory">
+      <div class="g"><span>CLAUDE <b id="gBrain">—</b></span></div>
+      <div class="g"><span>5H <b id="g5h">0</b></span><div class="bar"><div class="fill" id="g5hBar"></div></div></div>
+      <div class="g"><span>7D <b id="g7d">0</b></span><div class="bar"><div class="fill" id="g7dBar"></div></div></div>
+      <div class="g"><span>TODAY <b id="gToday">0</b></span><div class="bar"><div class="fill" id="gTodayBar"></div></div></div>
+      <div class="g"><span>GPU <b id="gGpu">—</b></span><div class="bar"><div class="fill" id="gGpuBar"></div></div></div>
+    </div>
     <div class="elev-badge" id="elevBadge" title="Temporary full access: actions that normally need your OK run without asking">
       FULL ACCESS <span id="elevTime">0:00</span>
       <button onclick="revokeElevation()">END</button>
@@ -979,6 +1001,8 @@ function connect() {
       case 'confirm_request': queueConfirm(msg); break;
       case 'confirm_resolved': onConfirmResolved(msg); break;
       case 'elevation': setElevation(msg.active, msg.remaining_s); break;
+      case 'usage': loadUsage(); break;
+      case 'notice': addMsg('system', (msg.level === 'urgent' ? '⚠ ' : '') + msg.text); break;
     }
   };
 }
@@ -1250,6 +1274,39 @@ function onConfirmResolved(msg) {
     showNextConfirm();
   }
 }
+
+// ─── Usage + GPU gauges ───
+function setGauge(barId, used, limit) {
+  const bar = document.getElementById(barId);
+  if (!limit) { bar.style.width = '0%'; bar.className = 'fill'; return; }
+  const pct = Math.min(100, Math.round(100 * used / limit));
+  bar.style.width = pct + '%';
+  bar.className = 'fill' + (pct >= 100 ? ' full' : pct >= 80 ? ' warn' : '');
+}
+
+async function loadUsage() {
+  try {
+    const d = await (await fetch('/api/usage')).json();
+    const state = d.claude.state;
+    const brainEl = document.getElementById('gBrain');
+    brainEl.textContent = state === 'ok' ? (d.backup_loaded ? 'OK·LOCAL LOADED' : 'OK') : state.toUpperCase();
+    brainEl.className = 'state-' + state;
+    document.getElementById('g5h').textContent = d.five_hour.requests + (d.five_hour.est_limit ? '/' + d.five_hour.est_limit : '');
+    document.getElementById('g7d').textContent = d.seven_day.requests + (d.seven_day.est_limit ? '/' + d.seven_day.est_limit : '');
+    document.getElementById('gToday').textContent = d.today + '/' + d.daily_budget;
+    setGauge('g5hBar', d.five_hour.requests, d.five_hour.est_limit);
+    setGauge('g7dBar', d.seven_day.requests, d.seven_day.est_limit);
+    setGauge('gTodayBar', d.today, d.daily_budget);
+    if (d.gpu) {
+      document.getElementById('gGpu').textContent = d.gpu.vram_used_gb.toFixed(1) + '/' + Math.round(d.gpu.vram_total_gb) + 'GB';
+      setGauge('gGpuBar', d.gpu.vram_used_gb, d.gpu.vram_total_gb);
+    } else {
+      document.getElementById('gGpu').textContent = 'N/A';
+    }
+  } catch (e) {}
+}
+loadUsage();
+setInterval(loadUsage, 20000);
 
 // ─── Temporary full access ───
 let elevTimer = null;
