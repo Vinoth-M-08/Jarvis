@@ -29,10 +29,10 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 
 **Known issues**
 
-- Replies are slow (~8 s of model time per request) because `qwen3:4b` reasons
-  before every answer; the end-of-speech wait is a fixed ~2 s.
+- The end-of-speech wait is a fixed ~2 s. (`qwen3:4b` thinking is now off —
+  `think: false` in `config.yaml` — which should cut most of the old ~8 s reply
+  time; set `think: true` to turn reasoning back on.)
 - `set_volume` / `get_volume` report success but don't change anything.
-- `tests/test_llm.py` (3 tests) targets an old config layout and fails.
 - No gatekeeper yet — use only on this machine, and keep an eye on it.
 
 ---
@@ -100,6 +100,7 @@ jarvis/
   tools/router.py    tool list + dispatch (risky tools disabled)
 tests/               pytest
 PLAN.md              full build plan
+NVIDIA_UPGRADES.md   GPU extras (Broadcast mic, CUDA checks, VRAM gauge)
 ```
 
 ```bash

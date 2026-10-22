@@ -45,8 +45,10 @@ def chat(messages: list[dict]) -> str:
     import ollama
     ollama_cfg = providers.get("ollama", provider)
     model = ollama_cfg.get("model", "qwen3:4b")
+    # Thinking models (qwen3) reason before every answer unless told not to.
+    think = ollama_cfg.get("think", False)
     try:
-        response = ollama.chat(model=model, messages=messages)
+        response = ollama.chat(model=model, messages=messages, think=think)
         return response.message.content or ""
     except Exception as e:
         return f"[LLM error: {e}]"

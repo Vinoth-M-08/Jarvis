@@ -236,10 +236,11 @@ def _call_openai_provider(provider_cfg: dict, temperature: float, full_messages:
 def _call_ollama_provider(provider_cfg: dict, temperature: float, full_messages: list[dict]) -> str:
     """Call Ollama provider."""
     model = provider_cfg["model"]
+    think = provider_cfg.get("think", False)
     tool_count = 0
     for _ in range(_MAX_TOOL_LOOPS):
         _check_abort()
-        response = ollama.chat(model=model, messages=full_messages, tools=TOOL_SCHEMAS)
+        response = ollama.chat(model=model, messages=full_messages, tools=TOOL_SCHEMAS, think=think)
         if response.message.tool_calls:
             full_messages.append(response.message.model_dump())
             for tc in response.message.tool_calls:

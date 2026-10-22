@@ -15,6 +15,7 @@ llm:
       label: Ollama (Local)
       model: qwen3:4b
       base_url: http://localhost:11434
+      think: false
 context:
   max_messages: 10
   summarize_after: 8

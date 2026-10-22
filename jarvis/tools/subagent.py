@@ -24,7 +24,7 @@ def delegate_task(task: str, context: str = "") -> str:
     messages.append({"role": "user", "content": task})
 
     try:
-        response = ollama.chat(model=_LOCAL_MODEL, messages=messages)
+        response = ollama.chat(model=_LOCAL_MODEL, messages=messages, think=False)
         import re
         text = response.message.content or ""
         # Strip thinking tags from local model too
