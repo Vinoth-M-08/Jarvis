@@ -47,7 +47,8 @@
   .btn.stop { background: var(--red-bg); color: var(--red); }
   .icon-btn { width: 42px; height: 42px; border: none; border-radius: 50%; background: var(--tile); color: var(--text); display: inline-flex; align-items: center; justify-content: center; }
   .icon-btn[aria-pressed="true"] { background: var(--red-bg); color: var(--red); }
-  select.provider { min-height: 42px; padding: 0 12px; border: none; border-radius: 999px; background: var(--tile); color: var(--text); max-width: 220px; }
+  select.provider { min-height: 42px; min-width: 170px; padding: 0 12px; border: none; border-radius: 999px; background: var(--tile); color: var(--text); max-width: 220px; }
+  select.provider:disabled { color: var(--dim); cursor: default; }
 
   /* Tiles */
   .tile { border-radius: var(--radius); background: var(--tile); padding: 22px; min-width: 0; transition: transform .35s cubic-bezier(.2,.7,.2,1), box-shadow .35s; }
@@ -175,7 +176,7 @@
       <button type="submit" class="btn primary">Send</button>
     </form>
     <label for="providerSelect" class="sr-only">Brain</label>
-    <select id="providerSelect" class="provider" title="Active brain"></select>
+    <select id="providerSelect" class="provider" title="Active brain" disabled><option>Loading brains…</option></select>
     <button type="button" class="icon-btn" id="muteBtn" aria-pressed="false" aria-label="Mute Jarvis's voice">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg>
     </button>
@@ -553,7 +554,7 @@ async function loadActivity() {
 let ws = null;
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => { $('connText').textContent = 'Online'; $('connPill').querySelector('.dot').style.background = 'var(--mint)'; };
+  ws.onopen = () => { loadProviders(); $('connText').textContent = 'Online'; $('connPill').querySelector('.dot').style.background = 'var(--mint)'; };
   ws.onclose = () => { $('connText').textContent = 'Reconnecting…'; $('connPill').querySelector('.dot').style.background = 'var(--red)'; setTimeout(connect, 2000); };
   ws.onmessage = (e) => {
     let msg; try { msg = JSON.parse(e.data); } catch { return; }
@@ -612,11 +613,27 @@ function setMuted(m) { $('muteBtn').setAttribute('aria-pressed', m ? 'true' : 'f
 $('muteBtn').addEventListener('click', async () => { try { const d = await (await fetch('/api/mute', { method: 'POST' })).json(); setMuted(d.muted); } catch (e) {} });
 
 // ─── Providers + settings ───
+// Never leave the switcher empty (it collapses to a bare arrow): say why there's nothing to pick.
+function providerPlaceholder(text) {
+  const sel = $('providerSelect');
+  sel.replaceChildren(el('option', { text }));
+  sel.disabled = true;
+  sel.title = text;
+}
 async function loadProviders() {
   try {
-    const d = await (await fetch('/api/providers')).json();
+    const r = await fetch('/api/providers');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const entries = Object.entries(d.providers || {});
     const sel = $('providerSelect');
-    sel.replaceChildren(...Object.entries(d.providers).map(([k, p]) => el('option', { value: k, selected: k === d.active, text: p.label || k })));
+    if (!entries.length) {
+      providerPlaceholder('No brains set up');
+    } else {
+      sel.replaceChildren(...entries.map(([k, p]) => el('option', { value: k, selected: k === d.active, text: p.label || k })));
+      sel.disabled = false;
+      sel.title = 'Active brain';
+    }
     const list = $('providersList');
     list.replaceChildren(...Object.entries(d.providers).map(([k, p]) => el('div', { class: 'prov' + (k === d.active ? ' active' : '') },
       el('div', { class: 'name' }, el('span', { text: p.label || k }), el('small', { text: `${p.type} · ${p.model || ''}` })),
@@ -624,7 +641,10 @@ async function loadProviders() {
       p.type !== 'claude_agent' ? el('button', { type: 'button', class: 'btn', onclick: () => editProvider(k, p) }, 'Edit') : null,
       k !== d.active && p.type !== 'claude_agent' ? el('button', { type: 'button', class: 'btn stop', onclick: () => deleteProvider(k) }, 'Delete') : null,
     )));
-  } catch (e) {}
+  } catch (e) {
+    providerPlaceholder('Brain: offline');
+    $('providersList').replaceChildren(el('p', { class: 'subline', text: "Can't reach Jarvis — is it running?" }));
+  }
 }
 async function loadClaudeModel() {
   try {
