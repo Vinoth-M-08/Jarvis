@@ -31,9 +31,23 @@ BUILTIN_TOOLS = [
 
 _WORKSPACE = Path(__file__).parent.parent.parent / "data" / "claude_workspace"
 
+# Extra environment for the Claude Code process.
+# ENABLE_TOOL_SEARCH=false: load Jarvis's tools up front. With tool search on, Claude must
+# call ToolSearch before any tool — the fence denies it, so every tool request wasted a
+# round (2-3 s) and Claude sometimes gave up ("I can't check the clock").
+CLI_ENV = {"ENABLE_TOOL_SEARCH": "false"}
+
 
 class BrainAborted(Exception):
     """The owner pressed Esc / said stop while Claude was working."""
+
+
+def text_delta(event: dict | None) -> str:
+    """The new text in a streamed API event (content_block_delta / text_delta), else ''."""
+    if not event or event.get("type") != "content_block_delta":
+        return ""
+    delta = event.get("delta") or {}
+    return delta.get("text", "") if delta.get("type") == "text_delta" else ""
 
 
 def jarvis_tool_name(sdk_name: str) -> str | None:
@@ -66,7 +80,7 @@ class ClaudeBrain:
                  tool_schemas: list[dict],
                  run_tool: Callable[[Any, str, dict], str],
                  system_prompt: Callable[[], str],
-                 model: str = "claude-opus-5-5",
+                 model: str = "claude-sonnet-5-5",
                  max_turns: int = 15,
                  on_tool: Callable[[str, dict], None] | None = None,
                  on_tool_result: Callable[[str, str], None] | None = None,
@@ -86,11 +100,13 @@ class ClaudeBrain:
 
     # ─── Blocking entry point (voice / HUD threads) ───
 
-    def ask(self, prompt: str, turn: Any, abort_event: threading.Event | None = None) -> str:
+    def ask(self, prompt: str, turn: Any, abort_event: threading.Event | None = None,
+            on_text: Callable[[str], None] | None = None) -> str:
+        """Blocking. on_text gets Claude's words as they are written (for speaking while it works)."""
         with self._lock:
             loop = self._ensure_loop()
             self._turn = turn
-            fut = asyncio.run_coroutine_threadsafe(self._ask(prompt), loop)
+            fut = asyncio.run_coroutine_threadsafe(self._ask(prompt, on_text=on_text), loop)
             try:
                 while True:
                     try:
@@ -106,6 +122,18 @@ class ClaudeBrain:
             finally:
                 self._turn = None
 
+    def warm_up(self) -> float:
+        """Start the session and run one tiny request, so the owner's first question doesn't
+        pay the ~6 s first-request cost. Not reported as usage. Returns seconds taken."""
+        import time
+        t = time.time()
+        with self._lock:
+            loop = self._ensure_loop()
+            asyncio.run_coroutine_threadsafe(
+                self._ask("(Start-up check, not from the owner. Reply with just: OK)", report_usage=False),
+                loop).result(timeout=120)
+        return time.time() - t
+
     def close(self) -> None:
         if self._loop is not None:
             asyncio.run_coroutine_threadsafe(self._reset(), self._loop).result(timeout=10)
@@ -119,15 +147,20 @@ class ClaudeBrain:
             self._loop = loop
         return self._loop
 
-    async def _ask(self, prompt: str) -> str:
-        from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+    async def _ask(self, prompt: str, report_usage: bool = True,
+                   on_text: Callable[[str], None] | None = None) -> str:
+        from claude_agent_sdk import AssistantMessage, ResultMessage, StreamEvent, TextBlock
         client = await self._connect()
         texts: list[str] = []
         result = None
         try:
             await client.query(prompt)
             async for msg in client.receive_response():
-                if isinstance(msg, AssistantMessage):
+                if isinstance(msg, StreamEvent):
+                    delta = text_delta(msg.event)
+                    if delta and on_text is not None:
+                        on_text(delta)
+                elif isinstance(msg, AssistantMessage):
                     texts.extend(b.text for b in msg.content if isinstance(b, TextBlock))
                 elif isinstance(msg, ResultMessage):
                     result = msg
@@ -135,7 +168,7 @@ class ClaudeBrain:
             await self._reset()  # broken session: reconnect on the next request
             raise
         if result is not None:
-            if self._on_usage:
+            if self._on_usage and report_usage:
                 self._on_usage(result)
             if result.is_error:
                 # Claude Code puts the reason in `result` (e.g. "Failed to authenticate: OAuth
@@ -182,6 +215,8 @@ class ClaudeBrain:
             can_use_tool=fence_permission,
             hooks={"PreToolUse": [HookMatcher(hooks=[fence_hook])]},
             cwd=str(_WORKSPACE),         # empty folder, not the repo
+            env=dict(CLI_ENV),
+            include_partial_messages=True,   # word-by-word text, so Jarvis can start speaking early
         )
 
     def _sdk_tools(self) -> list:

@@ -1,5 +1,7 @@
 from pathlib import Path
+import queue
 import re
+import time
 import yaml
 import numpy as np
 import sounddevice as sd
@@ -49,12 +51,6 @@ def _get_voice():
             )
             _voice_tensor = torch.load(path, weights_only=True)
     return _voice_tensor
-
-
-def _split_sentences(text: str) -> list[str]:
-    """Split text into sentences for streaming TTS."""
-    parts = re.split(r'(?<=[.!?])\s+', text)
-    return [p.strip() for p in parts if p.strip()]
 
 
 def speak_to_bytes(text: str) -> bytes:
@@ -112,41 +108,158 @@ def speak(text: str) -> None:
 
 
 def speak_streamed(text: str) -> None:
-    """Speak text sentence by sentence — starts playing before full generation is done.
+    """Speak text sentence by sentence; the next sentence is generated while one plays.
     Can be interrupted mid-stream via stop_speaking()."""
-    _interrupt.clear()
-    sentences = _split_sentences(text)
-    if not sentences:
-        return
+    stream = SpeechStream()
+    stream.feed(text)
+    stream.finish()
 
-    # Short text — just speak normally
-    if len(sentences) == 1:
-        speak(text)
-        return
 
+# ─── Speaking while the brain is still writing ───
+
+# A sentence ends at . ! ? (then a space) or at a line break.
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\s*\n+\s*")
+# The first piece may also end at a pause (, ; : —) once it's this long: Kokoro on the CPU
+# needs ~0.5 s + ~15 ms per character, so a short first piece starts the voice sooner.
+_CLAUSE_BREAK = re.compile(r"(?<=[,;:])\s+|\s+[—–-]\s+")
+_FIRST_PIECE_MIN_CHARS = 24
+
+
+def clean_for_speech(text: str) -> str:
+    """Drop markdown that would otherwise be read out (**bold**, `code`, # headings, list bullets)."""
+    text = re.sub(r"`{1,3}([^`]*)`{1,3}", r"\1", text)
+    text = re.sub(r"[*_#>]+", "", text)
+    text = re.sub(r"^\s*(?:[-•]|\d+[.)])\s+", "", text, flags=re.MULTILINE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+_SHORT_PHRASE_CACHE: dict[tuple[str, float], np.ndarray] = {}   # "On it.", "Okay." ... play instantly
+
+
+def _synthesize(text: str) -> np.ndarray | None:
+    speed = _load_config()["tts"]["speed"]
+    key = (text, speed)
+    if key in _SHORT_PHRASE_CACHE:
+        return _SHORT_PHRASE_CACHE[key]
     pipeline = _get_pipeline()
     voice = _get_voice()
-    cfg = _load_config()
-    speed = cfg["tts"]["speed"]
+    chunks = [np.asarray(audio, dtype=np.float32)
+              for _, _, audio in pipeline(text, voice=voice, speed=speed) if audio is not None]
+    audio = np.concatenate(chunks) if chunks else None
+    if audio is not None and len(text) <= 24 and len(_SHORT_PHRASE_CACHE) < 64:
+        _SHORT_PHRASE_CACHE[key] = audio
+    return audio
 
-    _speaking.set()
-    try:
-        for sentence in sentences:
-            if _interrupt.is_set():
-                break
-            chunks = []
-            for _, _, audio in pipeline(sentence, voice=voice, speed=speed):
-                if _interrupt.is_set():
-                    break
-                if audio is not None:
-                    chunks.append(audio)
-            if not chunks or _interrupt.is_set():
-                break
-            combined = np.concatenate(chunks)
-            sd.play(combined, samplerate=24000)
-            if _wait_or_interrupt():
-                break
-    finally:
-        sd.stop()  # ensure audio stops even if we break mid-play
-        _speaking.clear()
+
+def prepare_phrases(*phrases: str) -> None:
+    """Make the audio for short fixed phrases now, so they play with no delay later."""
+    for p in phrases:
+        try:
+            _synthesize(p)
+        except Exception as e:
+            print(f"[TTS] Couldn't prepare {p!r}: {e}")
+
+
+def _play(audio: np.ndarray) -> None:
+    sd.play(audio, samplerate=24000)
+    _wait_or_interrupt()
+
+
+class SpeechStream:
+    """Speak text while it is still arriving (e.g. Claude's reply as it is written).
+
+    feed() adds text; every finished sentence is queued at once. One thread turns
+    sentences into audio while another plays the previous one, so speech starts after
+    the first sentence instead of after the whole reply. finish() speaks the rest and
+    waits; stop_speaking() (Esc, mute, "stop") cuts it short.
+    """
+
+    def __init__(self, synthesize=_synthesize, play=_play):
+        self._synthesize = synthesize
+        self._play = play
+        self._buffer = ""
+        self._lock = threading.Lock()
+        self._sentences: queue.Queue = queue.Queue()
+        self._audio: queue.Queue = queue.Queue(maxsize=2)   # make at most 2 sentences ahead
+        self.fed_any = False          # anything given to feed() (so the caller won't say it again)
+        self.spoken: list[str] = []   # sentences queued for speaking, in order
+        self.first_audio_at: float | None = None   # time.time() when the voice started
         _interrupt.clear()
+        self._maker = threading.Thread(target=self._make_audio, name="tts-make", daemon=True)
+        self._player = threading.Thread(target=self._play_audio, name="tts-play", daemon=True)
+        self._maker.start()
+        self._player.start()
+
+    def feed(self, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            self.fed_any = True
+            self._buffer += text
+            parts = _SENTENCE_BREAK.split(self._buffer)
+            self._buffer = parts.pop()          # the unfinished tail waits for more text
+            for part in parts:
+                self._queue(part)
+            if not self.spoken:
+                self._queue_first_clause()
+
+    def _queue_first_clause(self) -> None:
+        """Nothing spoken yet and no full sentence: speak up to the first pause if it's long enough."""
+        for m in _CLAUSE_BREAK.finditer(self._buffer):
+            if m.start() >= _FIRST_PIECE_MIN_CHARS:
+                self._queue(self._buffer[:m.start()])
+                self._buffer = self._buffer[m.end():]
+                return
+
+    def finish(self) -> None:
+        """Speak whatever is left and block until done (or interrupted)."""
+        with self._lock:
+            self._queue(self._buffer)
+            self._buffer = ""
+        self._sentences.put(None)
+        self._player.join()
+
+    def _queue(self, part: str) -> None:
+        sentence = clean_for_speech(part)
+        if sentence:
+            self.spoken.append(sentence)
+            self._sentences.put(sentence)
+
+    def _make_audio(self) -> None:
+        while True:
+            sentence = self._sentences.get()
+            if sentence is None or _interrupt.is_set():
+                if sentence is not None:
+                    self._drain(self._sentences)
+                self._audio.put(None)
+                return
+            try:
+                audio = self._synthesize(sentence)
+            except Exception as e:
+                print(f"[TTS] Couldn't speak a sentence: {e}")
+                audio = None
+            if audio is not None:
+                self._audio.put(audio)
+
+    def _play_audio(self) -> None:
+        try:
+            while True:
+                audio = self._audio.get()
+                if audio is None:
+                    return
+                if _interrupt.is_set():
+                    continue                     # keep reading until the maker says it's done
+                _speaking.set()
+                if self.first_audio_at is None:
+                    self.first_audio_at = time.time()
+                self._play(audio)
+        finally:
+            _speaking.clear()
+
+    @staticmethod
+    def _drain(q: queue.Queue) -> None:
+        try:
+            while q.get_nowait() is not None:
+                pass
+        except queue.Empty:
+            pass

@@ -48,3 +48,55 @@ def test_speak_calls_sounddevice():
         from jarvis.tts import speak
         speak("Engaging thrusters.")
         mock_sd.play.assert_called_once()
+
+
+def _stream(spoken_audio):
+    from jarvis.tts import SpeechStream
+    return SpeechStream(synthesize=lambda s: np.full(10, len(s), dtype=np.float32),
+                        play=lambda audio: spoken_audio.append(int(audio[0])))
+
+
+def test_speech_stream_speaks_sentences_in_order_as_they_arrive():
+    played = []
+    s = _stream(played)
+    for piece in ["Opening Spo", "tify. Playing ", "the album", " now!"]:
+        s.feed(piece)
+    s.finish()
+    assert s.spoken == ["Opening Spotify.", "Playing the album now!"]
+    assert played == [len("Opening Spotify."), len("Playing the album now!")]
+
+
+def test_speech_stream_strips_markdown_and_skips_empty():
+    from jarvis.tts import clean_for_speech
+    assert clean_for_speech("**Paris** is the `capital`.") == "Paris is the capital."
+    assert clean_for_speech("- first item") == "first item"
+    played = []
+    s = _stream(played)
+    s.feed("\n\n## \n")
+    s.finish()
+    assert s.spoken == [] and played == []
+
+
+def test_speech_stream_stops_on_interrupt():
+    from jarvis import tts
+    played = []
+    s = _stream(played)
+    tts._interrupt.set()          # what stop_speaking() does (Esc, mute, "stop")
+    s.feed("One. Two. Three.")
+    s.finish()                    # must return, not hang
+    assert played == []
+
+
+def test_speech_stream_first_piece_ends_at_a_pause():
+    played = []
+    s = _stream(played)
+    s.feed("Time slows down near a black hole: to a distant observer, someone falling in")
+    s.feed(" would appear to freeze. Strange, right?")
+    s.finish()
+    assert s.spoken == ["Time slows down near a black hole:",
+                        "to a distant observer, someone falling in would appear to freeze.",
+                        "Strange, right?"]
+    s2 = _stream([])
+    s2.feed("Sure, opening it.")        # short pause point (< 24 chars): wait for the sentence
+    s2.finish()
+    assert s2.spoken == ["Sure, opening it."]

@@ -24,8 +24,9 @@ import ollama
 from openai import OpenAI
 
 from jarvis.wake import listen_for_wake_word
-from jarvis.stt import record_until_silence, transcribe_audio, set_abort_event, has_speech
-from jarvis.tts import speak, speak_streamed, is_speaking, stop_speaking
+from jarvis.stt import record_utterance, transcribe_audio, set_abort_event, has_speech
+from jarvis import stt
+from jarvis.tts import speak, is_speaking, stop_speaking, SpeechStream, prepare_phrases
 from jarvis.context import ContextManager
 from jarvis.memory import Memory
 from jarvis.tools.router import TOOL_SCHEMAS, dispatch
@@ -138,12 +139,6 @@ def _speak_if_unmuted(text: str) -> None:
         speak(text)
 
 
-def _speak_streamed_if_unmuted(text: str) -> None:
-    """Speak streamed text only if not muted."""
-    if not _muted.is_set():
-        speak_streamed(text)
-
-
 # --- OpenAI client cache (keyed by base_url) ---
 _openai_clients: dict[str, OpenAI] = {}
 
@@ -249,16 +244,38 @@ task_store = TaskStore(
 ) if _tasks_cfg.get("enabled", True) else None
 
 
-def _listen_short_answer() -> str:
-    """Record one short spoken answer (for yes/no confirmations)."""
+# Conversation feel (config.yaml voice:): chime instead of "Yes?", quick end-of-speech,
+# and a follow-up window so the next sentence doesn't need "Hey Jarvis".
+_voice_cfg = _startup_cfg.get("voice") or {}
+_WAKE_REPLY = str(_voice_cfg.get("wake_reply", "chime"))            # chime | yes
+_END_SILENCE_S = float(_voice_cfg.get("end_silence_ms", 700)) / 1000
+_FIRST_LISTEN_S = float(_voice_cfg.get("first_listen_seconds", 6))
+_FOLLOW_UP_S = float(_voice_cfg.get("follow_up_seconds", 8))         # 0 = one request per wake word
+_last_speech_end = 0.0
+
+
+def _listen(start_timeout_s: float, max_seconds: float = 30, raise_on_abort: bool = True) -> str:
+    """Record one utterance (wake-word mic paused meanwhile) and transcribe it. '' if nobody spoke."""
     from jarvis.wake import pause_wake_mic, resume_wake_mic
     pause_wake_mic()
-    time.sleep(0.15)
+    time.sleep(0.1)   # let pyaudio release the mic
+    global _last_speech_end
     try:
-        audio = record_until_silence(max_seconds=6)
+        audio = record_utterance(end_silence_s=_END_SILENCE_S, start_timeout_s=start_timeout_s,
+                                 max_seconds=max_seconds)
+        _last_speech_end = time.time() - _END_SILENCE_S   # recording stops end_silence after the last word
     finally:
         resume_wake_mic()
-    return transcribe_audio(audio) if has_speech(audio) else ""
+    if raise_on_abort:
+        _check_abort()
+    if not has_speech(audio):
+        return ""
+    return transcribe_audio(audio).strip()
+
+
+def _listen_short_answer() -> str:
+    """Record one short spoken answer (for yes/no confirmations)."""
+    return _listen(start_timeout_s=6, max_seconds=6, raise_on_abort=False)
 
 
 confirm_broker = ConfirmBroker(
@@ -344,7 +361,10 @@ def _system_prompt(with_time: bool = True) -> str:
         "PAST TASKS: for questions about earlier work ('what did I do last week', 'which file did you "
         "edit yesterday'), call search_tasks and answer with the day and the status from the record. "
         "If nothing is found, say so — never guess.\n\n"
-        "Answer in 1-3 sentences unless more is clearly needed."
+        "VOICE: your words are spoken aloud as you write them, in a live conversation. Answer in one or "
+        "two short sentences of plain speech — no lists, headings or markdown — unless the owner asks for "
+        "detail. Before using tools, first say in a few words what you're doing (\"Opening Spotify.\"), then "
+        "act, then confirm briefly. Never read out long text, links or file contents unless asked."
         + (f" Current date and time: {_now()}." if with_time else "")
     )
 
@@ -422,15 +442,33 @@ def set_claude_model(alias: str) -> str | None:
     return model
 
 
-def _play_beep() -> None:
-    """Short beep to signal processing has started."""
+def _tone(*notes: tuple[float, float], volume: float = 0.25) -> np.ndarray:
+    """(frequency Hz, seconds) notes -> one short sound with soft edges (no clicks)."""
+    parts = []
+    for freq, secs in notes:
+        t = np.arange(int(24000 * secs)) / 24000
+        fade = np.minimum(1.0, np.minimum(t, secs - t) / 0.01)
+        parts.append(volume * fade * np.sin(2 * np.pi * freq * t))
+    return np.concatenate(parts).astype(np.float32)
+
+
+_WAKE_CHIME = _tone((880, 0.06), (1320, 0.08))          # "I'm listening"
+_FOLLOW_UP_CUE = _tone((1046, 0.05), volume=0.12)        # soft: "still listening"
+_THINKING_BEEP = _tone((600, 0.08), volume=0.18)         # "got it, working on it"
+
+
+def _play_sound(sound: np.ndarray, wait: bool = True) -> None:
     try:
-        t = np.linspace(0, 0.12, int(24000 * 0.12), endpoint=False)
-        tone = 0.3 * np.sin(2 * np.pi * 600 * t).astype(np.float32)
-        sd.play(tone, samplerate=24000)
-        sd.wait()
+        sd.play(sound, samplerate=24000)
+        if wait:
+            sd.wait()
     except Exception:
         pass
+
+
+def _play_beep() -> None:
+    """Short beep to signal processing has started (doesn't wait — the reply can start right away)."""
+    _play_sound(_THINKING_BEEP, wait=False)
 
 
 def _strip_think(text: str) -> str:
@@ -555,8 +593,15 @@ def _run_tool_for_claude(turn: TurnContext | None, name: str, args: dict) -> str
     return _exec_tool_with_retry(turn or gatekeeper.new_turn("system"), name, args)
 
 
+_TOOL_ACK = "On it."
+_claude_stream: SpeechStream | None = None   # the reply stream of the Claude request in progress
+
+
 def _on_claude_tool(name: str, args: dict) -> None:
     _broadcast({"type": "tool", "name": name, "args": args})
+    stream = _claude_stream
+    if stream is not None and not stream.fed_any:
+        stream.feed(_TOOL_ACK + " ")   # Claude went straight to a tool: say something right away
 
 
 def _on_claude_tool_result(name: str, result: str) -> None:
@@ -585,7 +630,7 @@ def _on_claude_usage(result) -> None:
 
 def _get_claude_brain(provider_cfg: dict) -> ClaudeBrain:
     global _claude_brain
-    model = provider_cfg.get("model", "claude-opus-5-5")
+    model = provider_cfg.get("model", "claude-sonnet-5-5")
     max_turns = int(provider_cfg.get("max_turns", _MAX_TOOL_LOOPS))
     if _claude_brain is not None and (_claude_brain.model, _claude_brain.max_turns) == (model, max_turns):
         return _claude_brain
@@ -610,18 +655,41 @@ def _get_claude_brain(provider_cfg: dict) -> ClaudeBrain:
     return _claude_brain
 
 
-def _call_claude_provider(provider_cfg: dict, user_text: str, facts: list[str], turn: TurnContext) -> str:
-    """One request on the persistent Claude session. Claude keeps the history, so only the new text is sent."""
+def _warm_up_claude() -> None:
+    """Open the Claude session in the background so the next question skips the ~6 s first-request cost."""
+    provider = _active_provider_cfg()
+    if provider.get("type") != "claude_agent":
+        return
+
+    def _run():
+        try:
+            secs = _get_claude_brain(provider).warm_up()
+            print(f"[Claude] Ready: {provider.get('model')} (warm-up {secs:.1f}s).")
+        except Exception as e:
+            print(f"[Claude] Warm-up failed: {e}")
+
+    threading.Thread(target=_run, name="claude-warm-up", daemon=True).start()
+
+
+def _call_claude_provider(provider_cfg: dict, user_text: str, facts: list[str], turn: TurnContext,
+                          stream: SpeechStream | None = None) -> str:
+    """One request on the persistent Claude session. Claude keeps the history, so only the new text is sent.
+    With a stream, Claude's words are spoken as they are written."""
     parts = [f"[{_now()}]"]
     if facts:
         parts.append("Relevant context from memory: " + "; ".join(facts))
     if turn.needs_plan:
         parts.append(_PLAN_HINT)
     parts.append(user_text)
+    global _claude_stream
+    _claude_stream = stream
     try:
-        text = _get_claude_brain(provider_cfg).ask("\n".join(parts), turn, _abort)
+        text = _get_claude_brain(provider_cfg).ask("\n".join(parts), turn, _abort,
+                                                   on_text=stream.feed if stream is not None else None)
     except BrainAborted:
         raise _Aborted()
+    finally:
+        _claude_stream = None
     if turn.stopped:
         return turn.stop_message()
     return text
@@ -692,45 +760,70 @@ def handle_wake() -> None:
         print("[Jarvis] Listening for wake word...")
 
 
+_GOODBYES = {"thanks", "thank you", "thanks jarvis", "thank you jarvis", "that's all", "that's it",
+             "that is all", "no", "nope", "no thanks", "no thank you", "nothing", "nothing else",
+             "goodbye", "bye", "bye jarvis", "all good", "i'm good", "we're done", "done"}
+
+
+def _is_goodbye(text: str) -> bool:
+    """Ends a conversation (only checked for follow-ups, not the first request)."""
+    return re.sub(r"[^\w' ]", "", text.lower()).strip() in _GOODBYES
+
+
 def _handle_wake_inner() -> None:
+    """One conversation: the request after the wake word, then follow-ups without the wake word
+    until nobody speaks for follow_up_seconds, a goodbye, or Esc / "stop"."""
     if is_speaking():
         stop_speaking()
     print("[Jarvis] Wake word detected!")
     _broadcast({"type": "status", "message": "Wake."})
-    _speak_if_unmuted("Yes?")
+    if _WAKE_REPLY == "yes":
+        _speak_if_unmuted("Yes?")
+    else:
+        _play_sound(_WAKE_CHIME)
 
-    print("[Jarvis] Recording...")
-    _broadcast({"type": "status", "message": "Listening..."})
+    follow_up = False
+    while True:
+        _broadcast({"type": "status", "message": "Listening..."})
+        print("[Jarvis] Listening" + (" for a follow-up..." if follow_up else "..."))
+        t0 = time.time()
+        user_text = _listen(start_timeout_s=_FOLLOW_UP_S if follow_up else _FIRST_LISTEN_S)
+        if not user_text:
+            if follow_up:
+                print("[Jarvis] Conversation over (no follow-up).")
+            else:
+                print("[Jarvis] Didn't catch anything.")
+                _speak_if_unmuted("I didn't catch that.")
+            return
+        print(f"[You] {user_text}   ({time.time() - t0:.1f}s incl. transcription)")
 
-    # Pause wake word mic so STT can use the hardware exclusively
-    from jarvis.wake import pause_wake_mic, resume_wake_mic
-    pause_wake_mic()
-    time.sleep(0.15)  # Give pyaudio time to release the mic
-    try:
-        audio = record_until_silence()
-    finally:
-        resume_wake_mic()  # Always resume wake word detection
-    _check_abort()
-    print(f"[Jarvis] Recorded {len(audio)/16000:.1f}s of audio, transcribing...")
-    user_text = transcribe_audio(audio) if has_speech(audio) else ""
-    if not user_text.strip():
-        print("[Jarvis] Transcription empty — didn't catch anything.")
-        _speak_if_unmuted("I didn't catch that.")
-        _broadcast({"type": "status", "message": "Ready."})
-        return
-    print(f"[You] {user_text}")
+        if _is_stop_command(user_text):
+            abort_all()
+            print("[Jarvis] Stopped. (voice)")
+            raise _Aborted()
+        if follow_up and _is_goodbye(user_text):
+            _speak_if_unmuted("Okay.")
+            print("[Jarvis] Conversation over.")
+            return
 
-    if _is_stop_command(user_text):
-        abort_all()
-        print("[Jarvis] Stopped. (voice)")
-        raise _Aborted()
+        t1 = time.time()
+        stream = _new_speech_stream()
+        try:
+            response_text = _process_request(user_text, source="voice", stream=stream)
+            print(f"[Jarvis] {response_text}   (reply written in {time.time() - t1:.1f}s)")
+            _broadcast({"type": "status", "message": "Speaking..."})
+        finally:
+            if stream is not None:
+                stream.finish()   # returns at once if Esc / "Hey Jarvis" stopped it
+        if stream is not None and stream.first_audio_at:
+            print(f"[Timing] You stopped talking -> Jarvis started speaking: "
+                  f"{stream.first_audio_at - _last_speech_end:.1f}s")
+        _check_abort()
 
-    response_text = _process_request(user_text, source="voice")
-    _check_abort()
-
-    print(f"[Jarvis] {response_text}")
-    _broadcast({"type": "status", "message": "Speaking..."})
-    _speak_streamed_if_unmuted(response_text)
+        if _FOLLOW_UP_S <= 0:
+            return
+        follow_up = True
+        _play_sound(_FOLLOW_UP_CUE)
 
 
 _SPEED_MIN, _SPEED_MAX, _SPEED_STEP, _SPEED_NORMAL = 0.7, 1.8, 0.15, 1.1
@@ -757,10 +850,11 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
         if set_claude_model(value) is None:
             return "There's no Claude brain in config.yaml."
         key = _claude_provider_key(_load_config())
-        if key != get_active_provider():
+        switched = key != get_active_provider()
+        if switched:
             set_active_provider(key)
-            return f"Switched to Claude {label}."
-        return f"Okay, Claude {label} from now on."
+        _warm_up_claude()
+        return f"Switched to Claude {label}." if switched else f"Okay, Claude {label} from now on."
 
     if name == "which_brain":
         p = _active_provider_cfg()
@@ -775,6 +869,7 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
         if key == get_active_provider():
             return f"I'm already using {label}."
         set_active_provider(key)
+        _warm_up_claude()
         return f"Switched to {label}."
 
     if name == "mute":
@@ -856,18 +951,28 @@ def is_busy() -> bool:
     return _busy_count > 0 or is_speaking()
 
 
-def _process_request(user_text: str, source: str = "typed") -> str:
+def _process_request(user_text: str, source: str = "typed", stream: SpeechStream | None = None) -> str:
+    """With a stream, everything that should be said is fed into it (Claude's words as they are
+    written, anything else when ready); the caller then calls stream.finish()."""
     global _busy_count
     with _busy_lock:
         _busy_count += 1
     try:
-        return _process_request_inner(user_text, source)
+        response = _process_request_inner(user_text, source, stream)
+        if stream is not None and not stream.fed_any:
+            stream.feed(response)
+        return response
     finally:
         with _busy_lock:
             _busy_count -= 1
 
 
-def _process_request_inner(user_text: str, source: str = "typed") -> str:
+def _new_speech_stream() -> SpeechStream | None:
+    """A stream to speak the reply into, or None while muted."""
+    return None if is_muted() else SpeechStream()
+
+
+def _process_request_inner(user_text: str, source: str = "typed", stream: SpeechStream | None = None) -> str:
     """Build context, call LLM, update memory. Returns response text.
 
     source is who started the turn ("voice", "typed", or a background trigger);
@@ -925,10 +1030,12 @@ def _process_request_inner(user_text: str, source: str = "typed") -> str:
 
     notice = ""
     brain_used = ""
+    claude_streamed = False
     use_local = gate.use_local or decision.route == "local"
     if brain_selector.choose(uses_claude, use_local) == "claude":
         try:
-            response_text = _call_claude_provider(provider, user_text, facts, turn)
+            response_text = _call_claude_provider(provider, user_text, facts, turn, stream)
+            claude_streamed = stream is not None and stream.fed_any
             brain_used = provider.get("model", "claude")
             if brain_selector.claude_ok():
                 local_backup.unload()  # Claude is back: free the GPU
@@ -980,6 +1087,12 @@ def _process_request_inner(user_text: str, source: str = "typed") -> str:
         response_text = f"{response_text} {gate.notice}"
     if notice:
         response_text = f"{notice} {response_text}"
+    if stream is not None and stream.fed_any:
+        if claude_streamed:
+            if gate.notice:
+                stream.feed(" " + gate.notice)   # Claude's own words were already spoken
+        else:
+            stream.feed(" " + response_text)     # Claude spoke part of a reply, then failed
     memory.extract_and_store_facts(response_text, user_text)
     _record_task(turn, user_text, response_text, brain_used)
 
@@ -1017,14 +1130,26 @@ def _handle_typed_command(text: str) -> None:
     """Process a typed command (same as voice, but from keyboard)."""
     _abort.clear()
     print(f"[You] {text}")
+    stream = _new_speech_stream()
     try:
-        response = _process_request(text, source="typed")
+        response = _process_request(text, source="typed", stream=stream)
         print(f"[Jarvis] {response}")
-        _speak_streamed_if_unmuted(response)
     except _Aborted:
         print("[Jarvis] Stopped.")
     finally:
+        if stream is not None:
+            stream.finish()   # speaks the rest (returns at once if Esc stopped it)
         _abort.clear()
+
+
+def _preload_speech_to_text() -> None:
+    """Load Whisper + the VAD now, so the first spoken request doesn't wait ~2 s for them."""
+    try:
+        t = time.time()
+        stt.preload()
+        print(f"[STT] Speech recognition ready ({time.time() - t:.1f}s).")
+    except Exception as e:
+        print(f"[STT] Preload failed ({e}); it will load on first use.")
 
 
 def _tidy_memory() -> None:
@@ -1059,10 +1184,12 @@ def main() -> None:
 
     notifier.start()
     threading.Thread(target=_tidy_memory, name="tidy-memory", daemon=True).start()
+    threading.Thread(target=_preload_speech_to_text, name="stt-preload", daemon=True).start()
 
     if _desktop_cfg.get("backend", "windows_mcp") == "windows_mcp":
         print("[Windows-MCP] Starting (the first run downloads it, up to ~2 min)...")
         windows_mcp.start()
+    _warm_up_claude()   # after Windows-MCP: Claude's tool list includes the win_* tools
 
     warning = account_warning()
     if warning:
@@ -1070,6 +1197,9 @@ def main() -> None:
         _speak_if_unmuted("Warning: I'm running with administrator rights.")
 
     _speak_if_unmuted("Good morning. Jarvis online.")
+    # Kokoro is loaded now: make the fixed phrases ahead of time so they play instantly.
+    threading.Thread(target=prepare_phrases, args=(_TOOL_ACK, "Okay.", "I didn't catch that."),
+                     name="tts-phrases", daemon=True).start()
     listen_for_wake_word(handle_wake)
 
 

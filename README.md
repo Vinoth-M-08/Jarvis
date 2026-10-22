@@ -146,7 +146,10 @@ full access. The HUD only accepts requests from its own page (Origin check).
 
 **Known issues**
 
-- The end-of-speech wait is a fixed ~2 s.
+- Speed (measured, Claude Sonnet): you stop talking → Jarvis starts speaking in
+  **~3.7 s** for a Claude answer and **~1.5 s** for an instant command. The biggest
+  remaining piece is Kokoro on the CPU (~0.9 s per first sentence); the console
+  prints a `[Timing]` line after every spoken reply.
 - Local brain: use the **hybrid** `qwen3:4b-q4_K_M`, not plain `qwen3:4b`. The
   plain tag is now Qwen3-4B-*Thinking*-2507, which always reasons: `think: false`
   can't turn it off, and its reasoning ends up in the spoken reply. With the
@@ -178,12 +181,16 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt pip
 ollama pull qwen3:4b-q4_K_M
 ```
 
-**Claude brain:** install [Claude Code](https://code.claude.com/docs), run
-`claude` once and `/login` with your **Claude subscription** account (not an
-API key). The provider is `claude` in `config.yaml` (`model: claude-opus-5-5`;
-if your plan doesn't include Opus, pick Sonnet). Change the model in the HUD
-(**Settings → Claude model**: Opus / Sonnet / Haiku 5.5) or say **"use Sonnet"** —
-it applies from the next request, no restart. To run fully local, say **"use the
+**Claude brain:** Jarvis runs the copy of Claude Code that comes with
+`claude-agent-sdk`. Log it in once with your **Claude subscription** account (not
+an API key): run
+`.venv\Lib\site-packages\claude_agent_sdk\_bundled\claude.exe` in a normal
+terminal, type `/login`, then `/exit`. (Logging in to the Claude desktop app does
+*not* do this; if the console shows `Failed to authenticate: OAuth session
+expired`, run `/login` there again.) The provider is `claude` in `config.yaml`
+(`model: claude-sonnet-5-5` — quickest to start talking; say **"use Opus"** for big
+jobs). Change the model in the HUD (**Settings → Claude model**: Opus / Sonnet /
+Haiku 5.5) or by voice — it applies from the next request, no restart. To run fully local, say **"use the
 local brain"** or pick it in the header dropdown. Other Claude settings
 (`max_turns`) are only in `config.yaml`; the HUD's "add a brain" form is for
 OpenAI-compatible / Ollama brains.
@@ -204,7 +211,9 @@ http://localhost:7860 (localhost only).
 
 | Input | Action |
 |---|---|
-| **"Hey Jarvis"** → wait for "Yes?" → speak | Give a command |
+| **"Hey Jarvis"** → chime → speak | Give a command |
+| Keep talking after the reply (soft cue, ~8 s) | Follow-up — no wake word needed |
+| **"thanks"** / **"that's all"** (or just stay quiet) | End the conversation |
 | **"Hey Jarvis"** while busy, or **"stop"** | Interrupt |
 | **Esc** | Stop everything |
 | **F2** | Type a command in the console |

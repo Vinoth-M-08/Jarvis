@@ -9,7 +9,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from jarvis.tts import speak_streamed, stop_speaking, is_speaking
+from jarvis.tts import stop_speaking, is_speaking
 
 _STATIC_DIR = Path(__file__).parent / "static"
 
@@ -280,16 +280,19 @@ _tasks: set[asyncio.Task] = set()  # keep references so running chat tasks aren'
 
 
 async def _handle_chat(ws: WebSocket, user_text: str) -> None:
-    from jarvis.main import _process_request, _Aborted, _speak_streamed_if_unmuted, _abort
+    from jarvis.main import _process_request, _Aborted, _new_speech_stream, _abort
     _abort.clear()  # same as a typed (F2) command: a new request starts un-aborted
     loop = asyncio.get_event_loop()
+    stream = _new_speech_stream()   # Jarvis starts speaking while the reply is still being written
     try:
-        response = await loop.run_in_executor(None, _process_request, user_text, "typed")
-        threading.Thread(target=_speak_streamed_if_unmuted, args=(response,), daemon=True).start()
+        await loop.run_in_executor(None, _process_request, user_text, "typed", stream)
     except _Aborted:
         await _safe_send(ws, {"type": "response", "text": "Stopped."})
     except Exception as e:
         await _safe_send(ws, {"type": "response", "text": f"Error: {e}"})
+    finally:
+        if stream is not None:
+            threading.Thread(target=stream.finish, name="tts-finish", daemon=True).start()
 
 
 async def _safe_send(ws: WebSocket, event: dict) -> None:

@@ -100,6 +100,98 @@ def has_speech(audio: np.ndarray, sample_rate: int = 16000) -> bool:
     return bool(rms.max() >= SPEECH_RMS)
 
 
+# ─── End-of-speech detection with Silero VAD (bundled with openWakeWord) ───
+
+VAD_FRAME = 480            # 30 ms at 16 kHz
+_vad = None
+
+
+def _vad_prob_fn():
+    """frame (float32, -1..1) -> speech probability. Falls back to loudness if the model won't load."""
+    global _vad
+    if _vad is None:
+        try:
+            from openwakeword.vad import VAD
+            _vad = VAD()
+        except Exception as e:
+            print(f"[STT] Silero VAD unavailable ({e}); using loudness to detect speech.")
+            _vad = False
+    if _vad is False:
+        return lambda frame: 1.0 if float(np.sqrt(np.mean(frame ** 2))) >= SPEECH_RMS else 0.0
+    _vad.reset_states()
+    return lambda frame: float(_vad.predict(frame * 32767, frame_size=VAD_FRAME))
+
+
+def collect_utterance(frames, speech_prob, frame_s: float = VAD_FRAME / 16000,
+                      end_silence_s: float = 0.7, start_timeout_s: float = 8.0, max_seconds: float = 30,
+                      threshold: float = 0.5, pre_roll_s: float = 0.3, should_stop=lambda: False) -> np.ndarray:
+    """Read frames until the speaker has been quiet for end_silence_s after speaking.
+
+    Returns the utterance (with pre_roll_s of lead-in), or an empty array if nobody started
+    speaking within start_timeout_s. Speech starts after two speech frames in a row (60 ms),
+    so a click or a cough edge doesn't count.
+    """
+    keep_before = max(1, round(pre_roll_s / frame_s))
+    end_frames = max(1, round(end_silence_s / frame_s))
+    frames_seen = 0
+    recent: list[np.ndarray] = []      # lead-in before speech starts
+    utterance: list[np.ndarray] = []
+    speech_run = quiet_run = 0
+    started = False
+    for frame in frames:
+        if should_stop():
+            break
+        frames_seen += 1
+        p = speech_prob(frame)
+        if not started:
+            recent.append(frame)
+            recent = recent[-keep_before:]
+            speech_run = speech_run + 1 if p >= threshold else 0
+            if speech_run >= 2:
+                started = True
+                utterance = list(recent)
+            elif frames_seen * frame_s >= start_timeout_s:
+                return np.zeros(0, dtype=np.float32)
+            continue
+        utterance.append(frame)
+        quiet_run = quiet_run + 1 if p < threshold * 0.7 else 0
+        if quiet_run >= end_frames or len(utterance) * frame_s >= max_seconds:
+            break
+    if not started:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(utterance).astype(np.float32)
+
+
+def record_utterance(end_silence_s: float = 0.7, start_timeout_s: float = 8.0, max_seconds: float = 30,
+                     sample_rate: int = 16000) -> np.ndarray:
+    """Record one spoken request from the mic; stops ~end_silence_s after the speaker stops.
+    Empty array if nobody spoke within start_timeout_s (or Esc was pressed)."""
+    import sounddevice as sd
+
+    prob = _vad_prob_fn()
+    stopped = lambda: bool(_abort_event and _abort_event.is_set())
+    with sd.InputStream(samplerate=sample_rate, channels=1, dtype="float32", blocksize=VAD_FRAME) as stream:
+        def frames():
+            while True:
+                data, _ = stream.read(VAD_FRAME)
+                yield data.flatten()
+        audio = collect_utterance(frames(), prob, frame_s=VAD_FRAME / sample_rate,
+                                  end_silence_s=end_silence_s, start_timeout_s=start_timeout_s,
+                                  max_seconds=max_seconds, should_stop=stopped)
+    if stopped():
+        print("[STT] Recording aborted.")
+    return audio
+
+
+def preload() -> None:
+    """Load Whisper and the VAD at start-up and run one tiny transcription, so the
+    first spoken request doesn't wait for model loading or GPU warm-up."""
+    _vad_prob_fn()
+    model = _get_model()
+    segments, _ = model.transcribe(np.zeros(16000, dtype=np.float32), language="en")
+    list(segments)
+
+
 def record_until_silence(
     sample_rate: int = 16000,
     silence_threshold: float = 0.012,

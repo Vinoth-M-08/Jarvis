@@ -74,3 +74,39 @@ def test_has_speech_detects_a_spoken_chunk():
     t = np.arange(4800) / 16000
     audio[9600:14400] = 0.1 * np.sin(2 * np.pi * 220 * t)              # 0.3 s of voice-level sound
     assert has_speech(audio)
+
+
+def _frames(pattern, frame=480):
+    """'s' = speech frame, '.' = quiet frame (30 ms each)."""
+    return [np.full(frame, 0.2 if c == "s" else 0.0, dtype=np.float32) for c in pattern]
+
+
+def _prob(frame):
+    return 1.0 if frame[0] > 0.1 else 0.0
+
+
+def test_utterance_ends_after_short_silence():
+    from jarvis.stt import collect_utterance
+    pattern = "." * 20 + "s" * 40 + "." * 100          # 0.6 s quiet, 1.2 s speech, then quiet
+    consumed = []
+
+    def frames():
+        for f in _frames(pattern):
+            consumed.append(f)
+            yield f
+    audio = collect_utterance(frames(), _prob, end_silence_s=0.6, pre_roll_s=0.3)
+    speech_end = 20 + 40
+    assert len(consumed) <= speech_end + 21               # stopped ~0.6 s after speech, not 2 s+
+    assert audio.size == (10 + 38 + 20) * 480             # 0.3 s lead-in (ends with the 2 start frames) + speech + 0.6 s tail
+
+
+def test_utterance_times_out_when_nobody_speaks():
+    from jarvis.stt import collect_utterance
+    audio = collect_utterance(iter(_frames("." * 400)), _prob, start_timeout_s=1.0)
+    assert audio.size == 0
+
+
+def test_single_click_is_not_speech_and_stop_aborts():
+    from jarvis.stt import collect_utterance
+    assert collect_utterance(iter(_frames("..s......" * 20)), _prob, start_timeout_s=3).size == 0
+    assert collect_utterance(iter(_frames("s" * 50)), _prob, should_stop=lambda: True).size == 0
