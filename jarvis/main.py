@@ -370,7 +370,7 @@ def _process_request(user_text: str) -> str:
     except Exception as e:
         print(f"[WARN] Primary provider failed ({e}), trying Ollama fallback")
         cfg = _load_config()
-        ollama_provider = cfg["llm"]["providers"].get("ollama", {"model": "qwen3:8b"})
+        ollama_provider = cfg["llm"]["providers"].get("ollama", {"model": "qwen3:4b"})
         response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7), full_messages)
 
     context.add("user", user_text)

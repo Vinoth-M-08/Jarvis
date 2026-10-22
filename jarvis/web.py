@@ -231,7 +231,8 @@ def start_web_background(port: int = 7860) -> None:
     def _run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
+        # Localhost only — never expose the HUD to the network (PLAN.md §5.4)
+        config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
         server = uvicorn.Server(config)
         loop.run_until_complete(server.serve())
 

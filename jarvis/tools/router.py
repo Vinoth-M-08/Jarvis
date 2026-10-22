@@ -1,13 +1,16 @@
 """Maps LLM tool call names to Python functions and provides tool schemas."""
 from jarvis.tools.web_search import search, fetch_page, get_weather
-from jarvis.tools.app_control import open_app, open_url, kill_process
+from jarvis.tools.app_control import open_app, open_url
 from jarvis.tools.file_ops import read_file, write_file, list_files
-from jarvis.tools.code_exec import run_python
 from jarvis.tools.system import (
     get_clipboard, set_clipboard, set_volume, get_volume,
-    get_system_info, set_brightness, lock_screen, power_command,
+    get_system_info, set_brightness, lock_screen,
     show_notification, set_timer,
 )
+
+# Disabled until the gatekeeper exists (PLAN.md §5): run_python, power_command,
+# kill_process. Their implementations stay in tools/ but are not exposed.
+DISABLED_TOOLS = {"run_python", "power_command", "kill_process"}
 from jarvis.tools.desktop import (
     type_text, press_key, get_open_windows, focus_window,
     media_control, screenshot,
@@ -23,7 +26,6 @@ TOOL_MAP = {
     "get_weather":      lambda a: get_weather(a.get("location", "")),
     # Apps & processes
     "open_app":         lambda a: open_app(a["name"]),
-    "kill_process":     lambda a: kill_process(a["name"]),
     # Desktop automation — vision & mouse
     "read_screen":      lambda _: read_screen(),
     "find_on_screen":   lambda a: find_on_screen(a["text"]),
@@ -41,8 +43,6 @@ TOOL_MAP = {
     "read_file":        lambda a: read_file(a["path"]),
     "write_file":       lambda a: write_file(a["path"], a["content"]),
     "list_files":       lambda a: list_files(a["path"]),
-    # Code
-    "run_python":       lambda a: run_python(a["code"]),
     # Clipboard
     "get_clipboard":    lambda _: get_clipboard(),
     "set_clipboard":    lambda a: set_clipboard(a["text"]),
@@ -52,7 +52,6 @@ TOOL_MAP = {
     "get_system_info":  lambda _: get_system_info(),
     "set_brightness":   lambda a: set_brightness(int(a["level"])),
     "lock_screen":      lambda _: lock_screen(),
-    "power_command":    lambda a: power_command(a["action"]),
     # Notifications & timers
     "show_notification": lambda a: show_notification(a["title"], a["message"]),
     "set_timer":        lambda a: set_timer(int(a["seconds"]), a.get("message", "Timer done!")),
@@ -91,12 +90,6 @@ TOOL_SCHEMAS = [
     {"type": "function", "function": {
         "name": "open_app",
         "description": "Open app by name: chrome, firefox, edge, brave, discord, telegram, slack, teams, zoom, vscode, terminal, cmd, powershell, git bash, spotify, vlc, steam, epic games, notepad, notepad++, word, excel, powerpoint, paint, snipping tool, explorer, task manager, calculator, settings, control panel.",
-        "parameters": {"type": "object", "properties": {
-            "name": {"type": "string"}}, "required": ["name"]}}},
-
-    {"type": "function", "function": {
-        "name": "kill_process",
-        "description": "Kill/close a running process by name (e.g. chrome, spotify, discord).",
         "parameters": {"type": "object", "properties": {
             "name": {"type": "string"}}, "required": ["name"]}}},
 
@@ -193,13 +186,6 @@ TOOL_SCHEMAS = [
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"}}, "required": ["path"]}}},
 
-    # --- Code ---
-    {"type": "function", "function": {
-        "name": "run_python",
-        "description": "Execute Python code, returns stdout/stderr.",
-        "parameters": {"type": "object", "properties": {
-            "code": {"type": "string"}}, "required": ["code"]}}},
-
     # --- Clipboard ---
     {"type": "function", "function": {
         "name": "get_clipboard",
@@ -239,13 +225,6 @@ TOOL_SCHEMAS = [
         "name": "lock_screen",
         "description": "Lock the workstation.",
         "parameters": {"type": "object", "properties": {}}}},
-
-    {"type": "function", "function": {
-        "name": "power_command",
-        "description": "Shutdown, restart, or sleep the PC.",
-        "parameters": {"type": "object", "properties": {
-            "action": {"type": "string", "enum": ["shutdown", "restart", "sleep"]}},
-            "required": ["action"]}}},
 
     # --- Notifications & timers ---
     {"type": "function", "function": {

@@ -72,6 +72,18 @@ def test_router_dispatch_unknown_tool():
     result = dispatch("nonexistent_tool", {})
     assert "Unknown tool" in result
 
+def test_router_disabled_tools_not_exposed():
+    from jarvis.tools.router import TOOL_MAP, TOOL_SCHEMAS, DISABLED_TOOLS, dispatch
+    schema_names = {s["function"]["name"] for s in TOOL_SCHEMAS}
+    for name in DISABLED_TOOLS:
+        assert name not in TOOL_MAP
+        assert name not in schema_names
+        assert "Unknown tool" in dispatch(name, {})
+
+def test_router_map_and_schemas_match():
+    from jarvis.tools.router import TOOL_MAP, TOOL_SCHEMAS
+    assert set(TOOL_MAP) == {s["function"]["name"] for s in TOOL_SCHEMAS}
+
 def test_router_dispatch_known_tool():
     with patch("jarvis.tools.router.search") as mock_search:
         mock_search.return_value = "Search result"

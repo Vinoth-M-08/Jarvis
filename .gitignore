@@ -10,3 +10,6 @@ dist/
 
 *.log
 *.wav
+
+# Jarvis runtime data (PLAN.md §6)
+data/

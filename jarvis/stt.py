@@ -1,8 +1,26 @@
+import os
+import sys
 from pathlib import Path
 import yaml
 import numpy as np
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+
+
+def _add_nvidia_dll_dirs() -> None:
+    """Make pip-installed cuBLAS/cuDNN DLLs (nvidia-*-cu12) loadable by CTranslate2 on Windows."""
+    if sys.platform != "win32":
+        return
+    for site in sys.path:
+        nvidia = Path(site) / "nvidia"
+        if not nvidia.is_dir():
+            continue
+        for bin_dir in nvidia.glob("*/bin"):
+            os.add_dll_directory(str(bin_dir))
+            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+
+
+_add_nvidia_dll_dirs()
 
 def _load_config():
     with open(_CONFIG_PATH) as f:

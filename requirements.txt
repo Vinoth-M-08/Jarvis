@@ -1,4 +1,6 @@
 faster-whisper>=1.1.0
+nvidia-cublas-cu12; sys_platform == "win32"
+nvidia-cudnn-cu12>=9,<10; sys_platform == "win32"
 openWakeWord>=0.6.0
 kokoro>=0.9.4
 ollama>=0.4.0

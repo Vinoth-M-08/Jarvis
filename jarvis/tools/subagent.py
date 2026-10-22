@@ -3,7 +3,7 @@ from __future__ import annotations
 import ollama
 
 
-_LOCAL_MODEL = "qwen3:8b"
+_LOCAL_MODEL = "qwen3:4b"
 
 
 def delegate_task(task: str, context: str = "") -> str:

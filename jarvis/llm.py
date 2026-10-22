@@ -44,7 +44,7 @@ def chat(messages: list[dict]) -> str:
     # Ollama (default or fallback)
     import ollama
     ollama_cfg = providers.get("ollama", provider)
-    model = ollama_cfg.get("model", "qwen3:8b")
+    model = ollama_cfg.get("model", "qwen3:4b")
     try:
         response = ollama.chat(model=model, messages=messages)
         return response.message.content or ""

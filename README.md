@@ -1,5 +1,10 @@
 # J.A.R.V.I.S. — Local AI Voice Assistant
 
+> **Private copy.** Based on [PanPenek/JarvisAi](https://github.com/PanPenek/JarvisAi)
+> (MIT, commit `9dcf62b`), used as a starter kit and not tracked upstream.
+> See [PLAN.md](PLAN.md) for where this copy is going. The text below is the
+> original upstream README.
+
 A fully local, agentic AI voice assistant with wake word detection, screen vision, desktop control, and an Iron Man-inspired web UI. Runs entirely on your machine — no cloud required.
 
 > Say **"Hey Jarvis"** → ask anything → Jarvis sees your screen, controls your apps, searches the web, and speaks back.
@@ -293,4 +298,5 @@ jarvis/
 
 ## License
 
-MIT
+MIT — original work by PanPenek ([JarvisAi](https://github.com/PanPenek/JarvisAi)).
+The upstream repository states MIT in its README but ships no LICENSE file.
