@@ -59,6 +59,10 @@ def test_time_and_date_answered_directly(router):
     ("go back to claude", "brain", "claude"),
     ("switch to the backup model", "brain", "local"),
     ("use ollama", "brain", "local"),
+    ("use sonnet", "claude_model", "sonnet"),
+    ("Jarvis, switch to Claude Opus", "claude_model", "opus"),
+    ("use the haiku model", "claude_model", "haiku"),
+    ("change to sonnet", "claude_model", "sonnet"),
     ("which brain are you using?", "which_brain", None),
     ("what model is active", "which_brain", None),
     ("mute yourself", "mute", True),
@@ -84,12 +88,14 @@ def test_settings_commands_are_not_brain_tools():
     # Only the router changes settings; no tool exists the brain could call instead.
     from jarvis.tools.router import TOOL_SCHEMAS
     names = {t["function"]["name"] if "function" in t else t.get("name") for t in TOOL_SCHEMAS}
-    assert not names & {"set_active_provider", "set_provider", "toggle_mute", "set_tts_speed", "setting"}
+    assert not names & {"set_active_provider", "set_provider", "toggle_mute", "set_tts_speed", "setting",
+                         "set_claude_model", "claude_model"}
 
 
 @pytest.mark.parametrize("text", [
     "mute the sound",           # PC audio, not Jarvis's voice
     "use claude to write an email",
+    "use sonnet to summarise this page",
     "switch to chrome",
     "go to claude.ai",
 ])

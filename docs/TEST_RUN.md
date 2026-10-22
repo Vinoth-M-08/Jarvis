@@ -66,6 +66,10 @@ start.bat
 | 3.10 | "mute yourself", then "what time is it" | Speaker icon turns red; the time shows in the HUD but isn't spoken | |
 | 3.11 | "talk again" | "Okay, I'm talking again." is spoken | |
 | 3.12 | "speak faster" twice, then "speak normally" | Each reply says the new speed (1.25, 1.4, then 1.1); the voice changes | |
+| 3.13 | "use Sonnet", then "which model are you using" | "Okay, Claude Sonnet 5.5 from now on."; then names `claude-sonnet-5-5`; `config.yaml` shows it. Ask something — it works without a restart | |
+| 3.14 | "use the local brain", then "use Opus" | Switches back to Claude **and** sets Opus: "Switched to Claude Opus 5.5." | |
+| 3.15 | HUD gear → **Claude model** → pick Haiku | Dropdown keeps Haiku after reopening; the brain row shows `claude-haiku-5-5` | |
+| 3.16 | If a model says it isn't on your plan | Note which one; pick another (Sonnet is the safest) | |
 
 ## 4. Claude brain
 
@@ -202,7 +206,7 @@ Hard-refresh the HUD (Ctrl+F5) after `git pull`.
 | 16.6 | "Full access for 10 minutes" | Full access tile counts down in amber; **End** stops it | |
 | 16.7 | Today tile | Shows the last actions with done / blocked / waiting | |
 | 16.8 | Systems tile | Desktop green once Windows-MCP started; Browser green after 15.1 | |
-| 16.9 | Settings (gear) | Drawer lists brains, Use/Edit/Delete work; Save settings shows "Saved" | |
+| 16.9 | Settings (gear) | Drawer lists brains, Use/Edit/Delete work; Claude model dropdown shows the current model; Save settings shows "Saved" | |
 | 16.10 | Narrow the window to phone width | Tiles stack, no sideways scrolling | |
 
 ## 13. Optional — non-admin account

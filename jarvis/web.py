@@ -132,6 +132,23 @@ async def api_delete_provider(provider_key: str):
     return JSONResponse({"status": "ok"})
 
 
+@app.get("/api/claude-model")
+async def api_get_claude_model():
+    from jarvis.main import get_claude_model
+    return JSONResponse(get_claude_model())
+
+
+@app.put("/api/claude-model")
+async def api_set_claude_model(request: Request):
+    """Pick the Claude brain's model from the fixed list (opus / sonnet / haiku)."""
+    from jarvis.main import set_claude_model
+    body = await request.json()
+    model = set_claude_model(str(body.get("alias", "")))
+    if model is None:
+        return JSONResponse({"status": "error", "message": "Unknown model or no Claude brain"}, status_code=400)
+    return JSONResponse({"status": "ok", "model": model})
+
+
 # ─── Settings APIs ───
 
 @app.get("/api/settings")

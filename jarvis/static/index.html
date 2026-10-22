@@ -282,8 +282,16 @@
       <div class="field"><label for="pUrl">Base URL</label><input id="pUrl" type="text" placeholder="http://localhost:1234/v1"></div>
       <div class="field"><label for="pApiKey">API key (optional)</label><input id="pApiKey" type="password" autocomplete="off"></div>
       <button type="button" class="btn primary" id="pSave">Save brain</button>
-      <p class="subline">The Claude brain is set in config.yaml.</p>
+      <p class="subline">Pick the Claude model below; the rest of the Claude brain is set in config.yaml.</p>
     </details>
+  </section>
+  <section id="claudeModelSection" hidden>
+    <h3>Claude model</h3>
+    <div class="field">
+      <label for="claudeModel">Model the Claude brain uses</label>
+      <select id="claudeModel"></select>
+    </div>
+    <p class="subline">Sonnet is quicker and lasts longer on your plan; Opus for big jobs. Or say “use Sonnet”.</p>
   </section>
   <section>
     <h3>Voice &amp; model</h3>
@@ -579,7 +587,7 @@ function connect() {
       case 'usage': loadUsage(); break;
       case 'notice': addMsg('system', (msg.level === 'urgent' ? '⚠ ' : '') + msg.text); break;
       case 'mute': setMuted(msg.muted); break;
-      case 'provider_changed': loadProviders(); break;
+      case 'provider_changed': loadProviders(); loadClaudeModel(); break;
       case 'connected': break;
     }
   };
@@ -618,6 +626,21 @@ async function loadProviders() {
     )));
   } catch (e) {}
 }
+async function loadClaudeModel() {
+  try {
+    const d = await (await fetch('/api/claude-model')).json();
+    $('claudeModelSection').hidden = !d.available;
+    if (!d.available) return;
+    const opts = d.options.map((o) => el('option', { value: o.alias, selected: o.alias === d.current, text: `${o.label} · ${o.model}` }));
+    if (!d.current) opts.unshift(el('option', { value: '', selected: true, disabled: true, text: `Custom: ${d.model}` }));
+    $('claudeModel').replaceChildren(...opts);
+  } catch (e) {}
+}
+$('claudeModel').addEventListener('change', async (e) => {
+  await fetch('/api/claude-model', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alias: e.target.value }) });
+  loadClaudeModel();
+  loadProviders();
+});
 async function activate(k) { await fetch('/api/providers/' + encodeURIComponent(k), { method: 'POST' }); loadProviders(); }
 $('providerSelect').addEventListener('change', (e) => activate(e.target.value));
 function editProvider(k, p) {
@@ -666,7 +689,7 @@ function openDrawer(open) {
   $('drawer').classList.toggle('show', open);
   $('drawerBack').classList.toggle('show', open);
   $('drawer').setAttribute('aria-hidden', open ? 'false' : 'true');
-  if (open) { loadSettings(); loadProviders(); $('drawerClose').focus(); }
+  if (open) { loadSettings(); loadProviders(); loadClaudeModel(); $('drawerClose').focus(); }
 }
 $('settingsBtn').addEventListener('click', () => openDrawer(true));
 $('drawerClose').addEventListener('click', () => openDrawer(false));

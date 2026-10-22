@@ -52,8 +52,9 @@ Token use per request is printed and sent to the HUD as a `usage` event.
 **Phase 2 — fewer tokens, smarter routing:**
 - **Instant commands** (`jarvis/router_cmds.py`): time/date, open known apps or
   websites, volume, media, scroll, lock, screenshot, system info, timers — no brain.
-  Also Jarvis's own settings: "use the local brain" / "switch to Claude", "which brain
-  are you using", "mute yourself" / "talk again", "speak faster / slower / normally".
+  Also Jarvis's own settings: "use the local brain" / "switch to Claude", "use Sonnet /
+  Opus / Haiku", "which brain are you using", "mute yourself" / "talk again", "speak
+  faster / slower / normally". The HUD settings drawer has the same Claude model picker.
   These are router-only (no brain tool can change them) and work even when Claude's
   daily budget is spent. Adding brains, API keys and speech-to-text settings stay in the HUD.
 - **Answer cache** (`jarvis/cache/answers.py`): general questions are answered from

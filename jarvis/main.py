@@ -360,6 +360,45 @@ def set_active_provider(provider_key: str) -> bool:
     return True
 
 
+# The only Claude models the HUD and voice may pick (other IDs can still be set in config.yaml).
+CLAUDE_MODELS = {
+    "opus": ("Opus 5.5", "claude-opus-5-5"),
+    "sonnet": ("Sonnet 5.5", "claude-sonnet-5-5"),
+    "haiku": ("Haiku 5.5", "claude-haiku-5-5"),
+}
+
+
+def _claude_provider_key(cfg: dict) -> str | None:
+    providers = cfg.get("llm", {}).get("providers", {})
+    return next((k for k, p in providers.items() if p.get("type") == "claude_agent"), None)
+
+
+def get_claude_model() -> dict:
+    """Current Claude model and the choices, for the HUD."""
+    cfg = _load_config()
+    key = _claude_provider_key(cfg)
+    model = cfg["llm"]["providers"][key].get("model", "") if key else ""
+    current = next((a for a, (_, mid) in CLAUDE_MODELS.items() if mid == model), None)
+    return {"available": key is not None, "model": model, "current": current,
+            "options": [{"alias": a, "label": label, "model": mid} for a, (label, mid) in CLAUDE_MODELS.items()]}
+
+
+def set_claude_model(alias: str) -> str | None:
+    """Set the Claude brain's model by alias. Returns the model ID, or None if unknown / no Claude brain.
+    The running session is swapped on the next request (_get_claude_brain compares the model)."""
+    if alias not in CLAUDE_MODELS:
+        return None
+    cfg = _load_config()
+    key = _claude_provider_key(cfg)
+    if key is None:
+        return None
+    model = CLAUDE_MODELS[alias][1]
+    cfg["llm"]["providers"][key]["model"] = model
+    _save_config(cfg)
+    _broadcast({"type": "provider_changed", "provider": cfg["llm"].get("active_provider", key)})
+    return model
+
+
 def _play_beep() -> None:
     """Short beep to signal processing has started."""
     try:
@@ -676,6 +715,18 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
     if turn.source not in USER_SOURCES:
         return "I only change my settings when you ask me directly."
     gatekeeper.audit.record(turn.id, turn.source, "setting", {"name": name, "value": value}, 0, "allow", "settings command")
+
+    if name == "claude_model":
+        label = CLAUDE_MODELS[value][0]
+        if get_claude_model()["current"] == value and _active_provider_cfg().get("type") == "claude_agent":
+            return f"I'm already using Claude {label}."
+        if set_claude_model(value) is None:
+            return "There's no Claude brain in config.yaml."
+        key = _claude_provider_key(_load_config())
+        if key != get_active_provider():
+            set_active_provider(key)
+            return f"Switched to Claude {label}."
+        return f"Okay, Claude {label} from now on."
 
     if name == "which_brain":
         p = _active_provider_cfg()

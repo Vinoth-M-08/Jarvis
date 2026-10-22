@@ -4,7 +4,7 @@ Only whole, simple utterances match ("open notepad", "volume 40", "what time is 
 Anything longer ("open chrome and search for ...") goes to the brain. Matched tool
 calls still run through the gatekeeper.
 
-Jarvis's own settings (brain, mute, voice speed) are router-only: no brain tool can
+Jarvis's own settings (brain, Claude model, mute, voice speed) are router-only: no brain tool can
 change them, so a web page or file can't talk Claude into switching brains.
 """
 from __future__ import annotations
@@ -22,8 +22,9 @@ class RouterMatch:
     tool: str | None = None            # tool to run through the gatekeeper
     args: dict = field(default_factory=dict)
     reply: str | None = None           # direct answer (no tool)
-    setting: str | None = None         # Jarvis setting to change: brain | which_brain | mute | speed
-    value: object = None               # brain: "claude"/"local"; mute: bool; speed: "faster"/"slower"/"normal"/float
+    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed
+    value: object = None               # brain: "claude"/"local"; claude_model: "opus"/"sonnet"/"haiku";
+                                       # mute: bool; speed: "faster"/"slower"/"normal"/float
 
 
 def normalize(text: str) -> str:
@@ -59,8 +60,14 @@ def _speed_step(m, _now) -> RouterMatch:
     return RouterMatch(setting="speed", value="slower" if slower else "faster")
 
 
+_CLAUDE_MODEL = r"(?:claude )?(?P<cm>opus|sonnet|haiku)(?: model)?"
+
+
 def _setting_rules(r) -> list[tuple[re.Pattern, Callable]]:
+    claude_model = lambda m, _: RouterMatch(setting="claude_model", value=m.group("cm"))
     return [
+        (r(rf"(?:switch|change|go)(?: back)? to (?:the |your )?{_CLAUDE_MODEL}"), claude_model),
+        (r(rf"use (?:the |your )?{_CLAUDE_MODEL}"), claude_model),
         (r(rf"(?:switch|change|go)(?: back)? to (?:the |your )?{_BRAIN}"), _brain),
         (r(rf"use (?:the |your )?{_BRAIN}"), _brain),
         (r(r"(?:which|what) (?:brain|model|ai)(?: are you using| are you on| is (?:active|on))?"),
