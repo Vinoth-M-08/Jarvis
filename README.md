@@ -21,11 +21,16 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 | Phase | What | State |
 |---|---|---|
 | 0 | Setup, voice loop on a local model | ✅ Done |
-| 1 | Claude brain + gatekeeper + non-admin account | Next |
+| 1 | Claude brain + gatekeeper + non-admin account | In progress — gatekeeper done |
 | 2–7 | Router, usage meter, desktop control, browser, memory, extras | Planned |
 
 **Working now:** wake word → speech-to-text on the GPU → local LLM (Ollama,
 `qwen3:4b`) with 29 tools → spoken reply (Kokoro), plus the web HUD.
+Every tool call goes through the gatekeeper (`jarvis/security/`): tiers 0–3,
+free folders = `tools.allowed_paths` (Documents, Desktop, Downloads), protected
+folders blocked, only turns you start can act, taint gate after reading the web
+/ screen / clipboard, and the turn stops after 2 blocks. Decisions are logged to
+`data/audit.db`.
 
 **Known issues**
 
@@ -33,7 +38,10 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
   `think: false` in `config.yaml` — which should cut most of the old ~8 s reply
   time; set `think: true` to turn reasoning back on.)
 - `set_volume` / `get_volume` report success but don't change anything.
-- No gatekeeper yet — use only on this machine, and keep an eye on it.
+- No confirm dialog yet, so anything that needs your OK is declined for now:
+  files outside the free folders, overwriting a file, risky hotkeys, reading the
+  clipboard, and acting right after `read_screen` / `find_on_screen` (so the
+  "find text, then click it" flow stops after the find). The HUD dialog is next.
 
 ---
 
@@ -98,7 +106,9 @@ jarvis/
   web.py static/     HUD (FastAPI + WebSocket, 127.0.0.1)
   memory.py context.py llm.py
   tools/router.py    tool list + dispatch (risky tools disabled)
+  security/          gatekeeper, policy, path checks, shell parser, audit log
 tests/               pytest
+data/                audit.db and other runtime data (git-ignored)
 PLAN.md              full build plan
 NVIDIA_UPGRADES.md   GPU extras (Broadcast mic, CUDA checks, VRAM gauge)
 ```

@@ -169,20 +169,20 @@ TOOL_SCHEMAS = [
     # --- Files ---
     {"type": "function", "function": {
         "name": "read_file",
-        "description": "Read a file (Documents or Desktop only).",
+        "description": "Read a file (Documents, Desktop or Downloads; full path).",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"}}, "required": ["path"]}}},
 
     {"type": "function", "function": {
         "name": "write_file",
-        "description": "Write text to file (Documents or Desktop only).",
+        "description": "Write text to file (Documents, Desktop or Downloads; full path).",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
             "content": {"type": "string"}}, "required": ["path", "content"]}}},
 
     {"type": "function", "function": {
         "name": "list_files",
-        "description": "List files in directory (Documents or Desktop only).",
+        "description": "List files in directory (Documents, Desktop or Downloads; full path).",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"}}, "required": ["path"]}}},
 

@@ -18,6 +18,7 @@ from jarvis.tts import speak, speak_streamed, is_speaking, stop_speaking
 from jarvis.context import ContextManager
 from jarvis.memory import Memory
 from jarvis.tools.router import TOOL_SCHEMAS, dispatch
+from jarvis.security.gatekeeper import Gatekeeper, TurnContext
 
 _MAX_TOOL_LOOPS = 15
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
@@ -113,14 +114,15 @@ def _get_openai_client(base_url: str, api_key: str = "lm-studio") -> OpenAI:
 
 context = ContextManager()
 memory = Memory()
+gatekeeper = Gatekeeper()
 
 
 def _system_prompt() -> str:
     now = datetime.now().strftime("%A, %B %d %Y, %I:%M %p")
     return (
         "You are Jarvis, a fully agentic personal AI assistant with screen vision and desktop control. "
-        "Be concise, confident, and helpful. No moralizing, no refusals, no disclaimers. "
-        "Just do what your owner asks.\n\n"
+        "Be concise, confident, and helpful. Do what your owner asks, within the safety rules below.\n\n"
+        f"{gatekeeper.policy_prompt()}\n\n"
         "AGENTIC WORKFLOW for UI tasks:\n"
         "1. focus_window — bring app to front\n"
         "2. find_on_screen — locate text/buttons (returns x,y coordinates)\n"
@@ -195,7 +197,8 @@ def _parse_tool_args(raw) -> dict:
     return raw
 
 
-def _call_openai_provider(provider_cfg: dict, temperature: float, full_messages: list[dict]) -> str:
+def _call_openai_provider(provider_cfg: dict, temperature: float, full_messages: list[dict],
+                          turn: TurnContext) -> str:
     """Call any OpenAI-compatible provider (LM Studio, NVIDIA NIM, etc.)."""
     model = provider_cfg["model"]
     base_url = provider_cfg["base_url"]
@@ -220,7 +223,7 @@ def _call_openai_provider(provider_cfg: dict, temperature: float, full_messages:
                 _broadcast({"type": "tool", "name": tc.function.name, "args": args})
                 if tool_count == 4:
                     _speak_if_unmuted("Working on it.")
-                result = _exec_tool_with_retry(tc.function.name, args)
+                result = _exec_tool_with_retry(turn, tc.function.name, args)
                 print(f"[Tool: {tc.function.name}] {result[:120]}")
                 _broadcast({"type": "tool_result", "name": tc.function.name, "result": result[:200]})
                 full_messages.append({
@@ -228,12 +231,15 @@ def _call_openai_provider(provider_cfg: dict, temperature: float, full_messages:
                     "content": result,
                     "tool_call_id": tc.id,
                 })
+                if turn.stopped:
+                    return turn.stop_message()
         else:
             return _strip_think(msg.content or "Done.")
     return "Done."
 
 
-def _call_ollama_provider(provider_cfg: dict, temperature: float, full_messages: list[dict]) -> str:
+def _call_ollama_provider(provider_cfg: dict, temperature: float, full_messages: list[dict],
+                          turn: TurnContext) -> str:
     """Call Ollama provider."""
     model = provider_cfg["model"]
     think = provider_cfg.get("think", False)
@@ -250,7 +256,7 @@ def _call_ollama_provider(provider_cfg: dict, temperature: float, full_messages:
                 _broadcast({"type": "tool", "name": tc.function.name, "args": args})
                 if tool_count == 4:
                     _speak_if_unmuted("Working on it.")
-                result = _exec_tool_with_retry(tc.function.name, args)
+                result = _exec_tool_with_retry(turn, tc.function.name, args)
                 print(f"[Tool: {tc.function.name}] {result[:120]}")
                 _broadcast({"type": "tool_result", "name": tc.function.name, "result": result[:200]})
                 full_messages.append({
@@ -258,12 +264,14 @@ def _call_ollama_provider(provider_cfg: dict, temperature: float, full_messages:
                     "content": result,
                     "name": tc.function.name,
                 })
+                if turn.stopped:
+                    return turn.stop_message()
         else:
             return _strip_think(response.message.content or "Done.")
     return "Done."
 
 
-def _call_llm(full_messages: list[dict]) -> str:
+def _call_llm(full_messages: list[dict], turn: TurnContext) -> str:
     """Route to the active provider."""
     cfg = _load_config()
     llm_cfg = cfg["llm"]
@@ -274,17 +282,17 @@ def _call_llm(full_messages: list[dict]) -> str:
     ptype = provider.get("type", "ollama")
 
     if ptype == "openai":
-        return _call_openai_provider(provider, temperature, full_messages)
+        return _call_openai_provider(provider, temperature, full_messages, turn)
     else:
-        return _call_ollama_provider(provider, temperature, full_messages)
+        return _call_ollama_provider(provider, temperature, full_messages, turn)
 
 
-def _exec_tool_with_retry(name: str, args: dict) -> str:
-    """Execute a tool, retry once on failure."""
-    result = dispatch(name, args)
+def _exec_tool_with_retry(turn: TurnContext, name: str, args: dict) -> str:
+    """Execute a tool through the gatekeeper, retry once on failure (never on a block)."""
+    result = gatekeeper.run(turn, name, args, dispatch)
     if result.startswith("Tool '") and "failed:" in result:
         time.sleep(0.5)
-        result = dispatch(name, args)
+        result = gatekeeper.run(turn, name, args, dispatch)
     return result
 
 
@@ -340,7 +348,7 @@ def _handle_wake_inner() -> None:
         print("[Jarvis] Stopped. (voice)")
         raise _Aborted()
 
-    response_text = _process_request(user_text)
+    response_text = _process_request(user_text, source="voice")
     _check_abort()
 
     print(f"[Jarvis] {response_text}")
@@ -348,9 +356,14 @@ def _handle_wake_inner() -> None:
     _speak_streamed_if_unmuted(response_text)
 
 
-def _process_request(user_text: str) -> str:
-    """Build context, call LLM, update memory. Returns response text."""
+def _process_request(user_text: str, source: str = "typed") -> str:
+    """Build context, call LLM, update memory. Returns response text.
+
+    source is who started the turn ("voice", "typed", or a background trigger);
+    only voice and typed turns may run acting tools.
+    """
     _check_abort()
+    turn = gatekeeper.new_turn(source)
     _play_beep()
     _broadcast({"type": "user", "text": user_text})
     _broadcast({"type": "status", "message": "Thinking..."})
@@ -365,14 +378,14 @@ def _process_request(user_text: str) -> str:
     full_messages = [{"role": "system", "content": _system_prompt()}] + messages
 
     try:
-        response_text = _call_llm(full_messages)
+        response_text = _call_llm(full_messages, turn)
     except _Aborted:
         raise
     except Exception as e:
         print(f"[WARN] Primary provider failed ({e}), trying Ollama fallback")
         cfg = _load_config()
         ollama_provider = cfg["llm"]["providers"].get("ollama", {"model": "qwen3:4b"})
-        response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7), full_messages)
+        response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7), full_messages, turn)
 
     context.add("user", user_text)
     context.add("assistant", response_text)
@@ -413,7 +426,7 @@ def _handle_typed_command(text: str) -> None:
     _abort.clear()
     print(f"[You] {text}")
     try:
-        response = _process_request(text)
+        response = _process_request(text, source="typed")
         print(f"[Jarvis] {response}")
         _speak_streamed_if_unmuted(response)
     except _Aborted:

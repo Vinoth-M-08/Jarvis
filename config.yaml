@@ -31,4 +31,22 @@ tools:
   allowed_paths:
   - ~/Documents
   - ~/Desktop
+  - ~/Downloads
   code_timeout: 10
+security:
+  blocked_paths:
+  - C:/Windows
+  - C:/Program Files
+  - C:/Program Files (x86)
+  - C:/ProgramData
+  - ~/AppData/Roaming/Microsoft/Credentials
+  - ~/AppData/Local/Microsoft/Credentials
+  - ~/AppData/Roaming/Microsoft/Protect
+  untrusted_tools:
+  - web_search
+  - fetch_page
+  - read_screen
+  - find_on_screen
+  - get_clipboard
+  max_denials_per_turn: 2
+  audit_db: data/audit.db

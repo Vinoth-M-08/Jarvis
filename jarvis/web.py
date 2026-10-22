@@ -205,7 +205,7 @@ async def websocket_endpoint(ws: WebSocket):
                 loop = asyncio.get_event_loop()
                 try:
                     response = await loop.run_in_executor(
-                        None, _process_request, user_text,
+                        None, _process_request, user_text, "typed",
                     )
                     from jarvis.main import _speak_streamed_if_unmuted
                     threading.Thread(target=_speak_streamed_if_unmuted, args=(response,), daemon=True).start()
