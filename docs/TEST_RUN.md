@@ -16,7 +16,7 @@ cd <your Jarvis folder>
 git pull
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 .venv\Scripts\python.exe -m playwright install chromium   # only needed if Google Chrome isn't installed
-ollama pull qwen3:4b
+ollama pull qwen3:4b-q4_K_M
 ```
 
 | # | Check | Expected | ✓ |
@@ -61,7 +61,7 @@ start.bat
 | 3.5 | "take a screenshot" | File appears on the Desktop | |
 | 3.6 | "open youtube.com" | Browser opens YouTube | |
 | 3.7 | "use the local brain" | "Switched to Ollama (Local)."; HUD brain dropdown changes | |
-| 3.8 | "which brain are you using" | Names the local brain and `qwen3:4b` | |
+| 3.8 | "which brain are you using" | Names the local brain and `qwen3:4b-q4_K_M` | |
 | 3.9 | "switch to Claude" | "Switched to Claude (subscription)."; dropdown changes back | |
 | 3.10 | "mute yourself", then "what time is it" | Speaker icon turns red; the time shows in the HUD but isn't spoken | |
 | 3.11 | "talk again" | "Okay, I'm talking again." is spoken | |
@@ -130,7 +130,7 @@ Create a test folder first: `C:\Users\<you>\Downloads\jarvis-test\` with 3 small
 
 | # | Do | Expected | ✓ |
 |---|---|---|---|
-| 9.1 | Turn Wi-Fi **off**, ask "what is 15 percent of 2400?" | "Claude isn't reachable right now, so I'll use the local brain." + answer; `ollama ps` shows `qwen3:4b` loaded; HUD brain state not `OK` | |
+| 9.1 | Turn Wi-Fi **off**, ask "what is 15 percent of 2400?" | "Claude isn't reachable right now, so I'll use the local brain." + answer; `ollama ps` shows `qwen3:4b-q4_K_M` loaded; HUD brain state not `OK` | |
 | 9.2 | Wi-Fi **on**, wait ~2 min, ask anything | Claude answers again; `ollama ps` shows **no** model (unloaded) | |
 | 9.3 | Set `brain.min_free_vram_gb_for_backup: 100` in config, restart, Wi-Fi off, ask a question | "…the GPU is busy…, so right now I can only do quick commands…"; instant commands (3.x) still work. Set it back to 4 afterwards | |
 

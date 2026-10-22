@@ -159,7 +159,7 @@ brain_selector = BrainSelector(
     error_backoff_s=60 * float(_brain_cfg.get("error_backoff_minutes", 2)),
 )
 local_backup = LocalBackup(
-    model=((_startup_cfg.get("llm") or {}).get("providers") or {}).get("ollama", {}).get("model", "qwen3:4b"),
+    model=((_startup_cfg.get("llm") or {}).get("providers") or {}).get("ollama", {}).get("model", "qwen3:4b-q4_K_M"),
     keep_alive=str(_brain_cfg.get("backup_keep_alive", "5m")),
     min_free_vram_gb=float(_brain_cfg.get("min_free_vram_gb_for_backup", 4)),
     free_vram_gb=free_vram_gb,
@@ -521,7 +521,7 @@ def _call_llm(full_messages: list[dict], turn: TurnContext) -> str:
 
     if ptype == "claude_agent":
         # Claude is handled in _process_request; here it means Claude failed — use the local brain.
-        provider = providers.get("ollama", {"model": "qwen3:4b"})
+        provider = providers.get("ollama", {"model": "qwen3:4b-q4_K_M"})
         ptype = "ollama"
 
     if ptype == "openai":
@@ -956,7 +956,7 @@ def _process_request_inner(user_text: str, source: str = "typed") -> str:
         except Exception as e:
             print(f"[WARN] Primary provider failed ({e}), trying Ollama fallback")
             cfg = _load_config()
-            ollama_provider = cfg["llm"]["providers"].get("ollama", {"model": "qwen3:4b"})
+            ollama_provider = cfg["llm"]["providers"].get("ollama", {"model": "qwen3:4b-q4_K_M"})
             response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7), full_messages, turn)
 
         # The local brain is stateless, so it needs this history; the Claude session keeps its own.

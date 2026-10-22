@@ -122,7 +122,7 @@ def gpu_stats() -> dict:
 - **HUD gauge:** VRAM used/free, GPU load, temperature — next to the Claude 5h/7d gauges.
 - **VRAM-aware backup** (brain selector, PLAN.md §4.5):
   - Before loading the Ollama backup model, check `vram_free_gb`.
-  - `≥ 4 GB free` → load `qwen3:4b` as normal.
+  - `≥ 4 GB free` → load `qwen3:4b-q4_K_M` as normal.
   - `< 4 GB free` (e.g. gaming) → Jarvis says *"GPU is busy — I'll wait for Claude or use router commands only"*, or loads a smaller model if configured.
 - **Thermal note:** if `temp_c` stays very high, show a HUD warning (laptop cooling).
 

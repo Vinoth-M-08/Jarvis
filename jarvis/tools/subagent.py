@@ -1,9 +1,20 @@
 """Subagent — delegate subtasks to a local Ollama model for parallel/cheaper processing."""
 from __future__ import annotations
+from pathlib import Path
 import ollama
+import yaml
+
+_CONFIG_PATH = Path(__file__).parent.parent.parent / "config.yaml"
 
 
-_LOCAL_MODEL = "qwen3:4b"
+def _local_model() -> str:
+    """Same local model as the backup brain (llm.providers.ollama.model)."""
+    try:
+        with open(_CONFIG_PATH) as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg["llm"]["providers"]["ollama"]["model"]
+    except Exception:
+        return "qwen3:4b-q4_K_M"
 
 
 def delegate_task(task: str, context: str = "") -> str:
@@ -24,7 +35,7 @@ def delegate_task(task: str, context: str = "") -> str:
     messages.append({"role": "user", "content": task})
 
     try:
-        response = ollama.chat(model=_LOCAL_MODEL, messages=messages, think=False)
+        response = ollama.chat(model=_local_model(), messages=messages, think=False)
         import re
         text = response.message.content or ""
         # Strip thinking tags from local model too

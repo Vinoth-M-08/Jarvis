@@ -32,7 +32,7 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 **Working now:** wake word → speech-to-text on the GPU → **Claude** (via the
 Claude Agent SDK on your Claude subscription) with Jarvis's 29 tools → spoken
 reply (Kokoro), plus the web HUD. If Claude fails (not logged in, limit hit, no
-internet), that request falls back to the local brain (Ollama `qwen3:4b`).
+internet), that request falls back to the local brain (Ollama `qwen3:4b-q4_K_M`).
 
 **Claude brain** (`jarvis/brain/`): one persistent Claude session. Claude gets
 only Jarvis's own tools (served in-process as `mcp__jarvis__*`), and each call
@@ -146,9 +146,12 @@ full access. The HUD only accepts requests from its own page (Origin check).
 
 **Known issues**
 
-- The end-of-speech wait is a fixed ~2 s. (`qwen3:4b` thinking is now off —
-  `think: false` in `config.yaml` — which should cut most of the old ~8 s reply
-  time; set `think: true` to turn reasoning back on.)
+- The end-of-speech wait is a fixed ~2 s.
+- Local brain: use the **hybrid** `qwen3:4b-q4_K_M`, not plain `qwen3:4b`. The
+  plain tag is now Qwen3-4B-*Thinking*-2507, which always reasons: `think: false`
+  can't turn it off, and its reasoning ends up in the spoken reply. With the
+  hybrid model and `think: false` (in `config.yaml`) answers take ~1–2 s instead
+  of 12–35 s; set `think: true` to turn reasoning back on.
 - `set_volume` / `get_volume` report success but don't change anything.
 - Approvals need the HUD open: Tier 2 (overwrite, full access) is click-only, and
   with no HUD open those time out and are denied. Tier 1 can also be answered
@@ -172,7 +175,7 @@ uv venv --python 3.12 .venv
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt pip
 .venv\Scripts\python.exe -m spacy download en_core_web_sm
 
-ollama pull qwen3:4b
+ollama pull qwen3:4b-q4_K_M
 ```
 
 **Claude brain:** install [Claude Code](https://code.claude.com/docs), run
@@ -242,7 +245,7 @@ by themselves once Jarvis is up. Tiles stack on narrow windows.
 | No voice | Insert / HUD mute toggled, or say "talk again". Windows output device and volume. |
 | HUD shows "Brain: offline" / "Not connected" | Jarvis isn't running, or the page was opened as a file. Run `start.bat`, open http://localhost:7860, Ctrl+F5. |
 | Old-looking HUD after `git pull` | Ctrl+F5 to reload the page. |
-| Brain errors | Ollama running? `ollama list` should show `qwen3:4b`. |
+| Brain errors | Ollama running? `ollama list` should show `qwen3:4b-q4_K_M`. |
 
 ---
 

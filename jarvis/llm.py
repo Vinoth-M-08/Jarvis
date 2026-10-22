@@ -44,8 +44,9 @@ def chat(messages: list[dict]) -> str:
     # Ollama (default or fallback)
     import ollama
     ollama_cfg = providers.get("ollama", provider)
-    model = ollama_cfg.get("model", "qwen3:4b")
-    # Thinking models (qwen3) reason before every answer unless told not to.
+    model = ollama_cfg.get("model", "qwen3:4b-q4_K_M")
+    # Hybrid qwen3 reasons before every answer unless told not to. (The plain
+    # qwen3:4b tag is the thinking-only 2507 model, which ignores think=False.)
     think = ollama_cfg.get("think", False)
     try:
         response = ollama.chat(model=model, messages=messages, think=think)

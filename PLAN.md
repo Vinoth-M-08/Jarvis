@@ -112,7 +112,7 @@
 | Speech-to-text | faster-whisper `small` → `medium` on CUDA (GPU is free now) | fork | No |
 | **Decision maker** | **TypeSafe AI Jev model** (typed Choice / Score / Noul API); fallback rules + local embeddings (small sentence-embedding model on CPU) | external + ours | Yes (Jev) — command text only; fallback: No |
 | **Brain (main)** | **Claude Agent SDK**, logged in with Claude subscription (`ANTHROPIC_API_KEY` **unset**) | ours | Yes — request context |
-| **Brain (backup)** | Fork's Ollama tool loop → **Ollama 4B** tool-calling model (e.g. `qwen3:4b`; ~3 GB VRAM, ~1 GB RAM **only while loaded**) | fork | **No** |
+| **Brain (backup)** | Fork's Ollama tool loop → **Ollama 4B** tool-calling model (e.g. `qwen3:4b-q4_K_M`, the hybrid Qwen3-4B with a real thinking switch; ~3 GB VRAM, ~1 GB RAM **only while loaded**) | fork | **No** |
 | Brain (optional later) | FreeLLMAPI — general questions only, no memory/files | — | Yes — question text only |
 | Text-to-speech | Kokoro-82M on CPU (ElevenLabs optional later) | fork | No |
 | Desktop control | **Windows-MCP** (accessibility tree, no vision needed) | external | No |
@@ -325,7 +325,7 @@ security:
 brain:
   primary: claude_subscription
   backup: ollama              # local, loaded only on demand
-  backup_model: qwen3:4b      # pick current best 4B tool-calling model
+  backup_model: qwen3:4b-q4_K_M  # hybrid Qwen3-4B; plain qwen3:4b is thinking-only
   freellmapi_general_only: false
   max_denials_per_turn: 2
 decision:
@@ -426,11 +426,11 @@ Jarvis/                         # our fork of PanPenek/JarvisAi
 ## 7. Phased Roadmap
 
 ### Phase 0 — Setup & fork (1 day)
-- Install: Python 3.11+, Git, Node.js, `uv`, Ollama, Claude desktop app / Claude Code; `ollama pull qwen3:4b`.
+- Install: Python 3.11+, Git, Node.js, `uv`, Ollama, Claude desktop app / Claude Code; `ollama pull qwen3:4b-q4_K_M`.
 - Claude Code: `/login` with the **subscription** account; confirm `ANTHROPIC_API_KEY` is not set.
 - Fork PanPenek/JarvisAi (check LICENSE file; keep attribution), clone, copy this PLAN.md in.
 - Remove `run_python`, `power_command`, `kill_process` from `TOOL_MAP` before first run.
-- Test the voice loop with the fork's built-in Ollama provider using `qwen3:4b` (this later becomes the backup brain).
+- Test the voice loop with the fork's built-in Ollama provider using `qwen3:4b-q4_K_M` (this later becomes the backup brain).
 - **Done when:** "Hey Jarvis, what time is it?" works end to end.
 
 ### Phase 1 — Claude brain + gatekeeper + safe account (≈1–1.5 weeks) ⚠ required before daily use
@@ -565,7 +565,7 @@ Jarvis/                         # our fork of PanPenek/JarvisAi
 
 ## 11. Next Steps (on the personal laptop)
 
-1. Install Python, Git, Node.js, `uv`, Ollama, Claude desktop app; log in to Claude Code with the subscription; `ollama pull qwen3:4b`.
+1. Install Python, Git, Node.js, `uv`, Ollama, Claude desktop app; log in to Claude Code with the subscription; `ollama pull qwen3:4b-q4_K_M`.
 2. Fork + clone PanPenek/JarvisAi; copy this `PLAN.md` into the repo.
 2b. Join the **TypeSafe AI Jev waitlist** (typesafe.ai); Jarvis runs on the rules fallback until access arrives.
 3. Open the folder in Claude Code and say: *"Read PLAN.md and start Phase 0."*

@@ -18,7 +18,7 @@ llm:
     ollama:
       type: ollama
       label: Ollama (Local)
-      model: qwen3:4b
+      model: qwen3:4b-q4_K_M
       base_url: http://localhost:11434
       think: false
 brain:
