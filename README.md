@@ -22,7 +22,8 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 |---|---|---|
 | 0 | Setup, voice loop on a local model | ✅ Done |
 | 1 | Claude brain + gatekeeper + non-admin account | ✅ Code done — verify on the laptop; set up the account with [docs/NON_ADMIN_ACCOUNT.md](docs/NON_ADMIN_ACCOUNT.md) |
-| 2–7 | Router, usage meter, desktop control, browser, memory, extras | Planned |
+| 2 | Router, answer cache, brain selector + on-demand backup, gauges, notices, decision maker, plan approval | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) |
+| 3–7 | Desktop control (Windows-MCP), browser, voice quality, memory, extras | Planned |
 
 **Working now:** wake word → speech-to-text on the GPU → **Claude** (via the
 Claude Agent SDK on your Claude subscription) with Jarvis's 29 tools → spoken
@@ -45,6 +46,24 @@ Token use per request is printed and sent to the HUD as a `usage` event.
 - **Daily Claude budget** (`brain.daily_claude_budget`, default 100 requests):
   one heads-up at 80 %, and once it's used up the local brain answers for the
   rest of the day. Counts live in `data/usage.db`.
+
+**Phase 2 — fewer tokens, smarter routing:**
+- **Instant commands** (`jarvis/router_cmds.py`): time/date, open known apps or
+  websites, volume, media, scroll, lock, screenshot, system info, timers — no brain.
+- **Answer cache** (`jarvis/cache/answers.py`): general questions are answered from
+  cache for 7 days (never personal or time-sensitive ones). Say "clear cache".
+- **Brain selector** (`jarvis/brain/selector.py`): Claude first; on failure it backs
+  off and the local brain answers. The local model loads only when needed (after a
+  free-VRAM check) and is unloaded when Claude is back.
+- **Gauges**: Claude requests/tokens in the 5-hour and 7-day windows, today's
+  budget, GPU VRAM — in the HUD header (`GET /api/usage`).
+- **Notices** (`jarvis/notify.py`): urgent ones spoken now (timers), routine ones
+  batched at the next pause.
+- **Decision maker** (`jarvis/decision/`): rules decide route, risk, complexity,
+  "unclear?" (asks before spending tokens) and "needs a plan?". The TypeSafe Jev
+  model plugs in later (`jev_client.py`).
+- **Plans** (`jarvis/judge.py`): multi-step or file-changing requests get one plan
+  card; every step is checked first, approved steps run without asking again.
 
 **Account check:** at startup Jarvis warns (console + voice) if it runs with
 administrator rights. Run it as a standard user —
