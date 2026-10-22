@@ -50,3 +50,5 @@ security:
   - get_clipboard
   max_denials_per_turn: 2
   audit_db: data/audit.db
+  confirm_timeout_s: 30
+  elevation_max_minutes: 15

@@ -547,6 +547,38 @@
   .modal-btns { display: flex; gap: 8px; margin-top: 16px; }
   .modal-btns .settings-btn { flex: 1; }
 
+  /* Confirm dialog (gatekeeper approvals) */
+  .confirm-modal { border-color: var(--gold); box-shadow: 0 0 30px var(--gold-dim); }
+  .confirm-modal.strong { border-color: var(--red); box-shadow: 0 0 30px var(--red-dim); }
+  .confirm-modal .modal-title { color: var(--gold); }
+  .confirm-modal.strong .modal-title { color: var(--red); }
+  .confirm-summary { font-size: 15px; color: var(--text); margin-bottom: 10px; word-break: break-word; }
+  .confirm-reason { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+  .confirm-meta {
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: 'Orbitron', monospace; font-size: 9px; letter-spacing: 1px; color: var(--text-dim);
+  }
+  .confirm-tier { padding: 2px 6px; border-radius: 4px; background: var(--gold-dim); color: var(--gold); }
+  .confirm-modal.strong .confirm-tier { background: var(--red-dim); color: var(--red); }
+  .confirm-bar { height: 3px; background: var(--glass-border); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+  .confirm-bar-fill { height: 100%; background: var(--gold); width: 100%; transition: width 0.25s linear; }
+  .confirm-modal.strong .confirm-bar-fill { background: var(--red); }
+  .settings-btn.allow { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+  .settings-btn.allow:hover { filter: brightness(1.2); }
+
+  /* Temporary full access badge */
+  .elev-badge {
+    display: none; align-items: center; gap: 8px; padding: 5px 10px;
+    border: 1px solid var(--gold); border-radius: var(--radius-sm); background: var(--gold-dim);
+    font-family: 'Orbitron', monospace; font-size: 9px; letter-spacing: 1px; color: var(--gold);
+  }
+  .elev-badge.show { display: flex; }
+  .elev-badge button {
+    border: 1px solid var(--gold); background: transparent; color: var(--gold); border-radius: 4px;
+    font-family: 'Orbitron', monospace; font-size: 8px; letter-spacing: 1px; padding: 2px 6px; cursor: pointer;
+  }
+  .elev-badge button:hover { background: var(--gold); color: var(--bg); }
+
   /* ─── Particles ─── */
   .particles { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
   .particle {
@@ -614,6 +646,10 @@
     </div>
   </div>
   <div class="header-right">
+    <div class="elev-badge" id="elevBadge" title="Temporary full access: actions that normally need your OK run without asking">
+      FULL ACCESS <span id="elevTime">0:00</span>
+      <button onclick="revokeElevation()">END</button>
+    </div>
     <select class="model-select" id="modelSelect" title="Active AI provider">
       <option value="">LOADING...</option>
     </select>
@@ -807,6 +843,24 @@
   </div>
 </div>
 
+<div class="modal-overlay" id="confirmOverlay">
+  <div class="modal confirm-modal" id="confirmModal" role="alertdialog" aria-labelledby="confirmTitle">
+    <div class="modal-title" id="confirmTitle">Approval needed</div>
+    <div class="confirm-summary" id="confirmSummary"></div>
+    <div class="confirm-reason" id="confirmReason"></div>
+    <div class="confirm-meta">
+      <span class="confirm-tier" id="confirmTier"></span>
+      <span id="confirmHint"></span>
+      <span id="confirmCountdown"></span>
+    </div>
+    <div class="confirm-bar"><div class="confirm-bar-fill" id="confirmBar"></div></div>
+    <div class="modal-btns">
+      <button class="settings-btn danger" onclick="answerConfirm(false)">Deny</button>
+      <button class="settings-btn allow" onclick="answerConfirm(true)">Allow</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const msgEl = document.getElementById('messages');
 const inputEl = document.getElementById('input');
@@ -922,6 +976,9 @@ function connect() {
       case 'response': setThinking(false); hideActivity(); setReactorState('speaking'); setStatusText('SPEAKING'); addMsg('assistant', msg.text); addLiveFeed('assistant', msg.text); break;
       case 'mute': isMuted = msg.muted; updateMuteUI(); addMsg('system', msg.muted ? '🔇 MUTED' : '🔊 UNMUTED'); break;
       case 'provider_changed': loadProviders(); break;
+      case 'confirm_request': queueConfirm(msg); break;
+      case 'confirm_resolved': onConfirmResolved(msg); break;
+      case 'elevation': setElevation(msg.active, msg.remaining_s); break;
     }
   };
 }
@@ -1142,6 +1199,78 @@ async function deleteProvider(key) {
     if (d.status === 'ok') { await loadProvidersFull(); loadProviders(); }
     else alert(d.message || 'Cannot delete');
   } catch(e) {}
+}
+
+// ─── Gatekeeper approvals ───
+let confirmQueue = [];
+let currentConfirm = null;
+let confirmTimer = null;
+
+function queueConfirm(req) {
+  confirmQueue.push(req);
+  if (!currentConfirm) showNextConfirm();
+}
+
+function showNextConfirm() {
+  currentConfirm = confirmQueue.shift() || null;
+  clearInterval(confirmTimer);
+  const overlay = document.getElementById('confirmOverlay');
+  if (!currentConfirm) { overlay.classList.remove('show'); return; }
+  const req = currentConfirm;
+  const strong = req.tier >= 2;
+  document.getElementById('confirmModal').classList.toggle('strong', strong);
+  document.getElementById('confirmTitle').textContent = strong ? 'Strong approval needed' : 'Approval needed';
+  document.getElementById('confirmSummary').textContent = req.summary;
+  document.getElementById('confirmReason').textContent = req.reason;
+  document.getElementById('confirmTier').textContent = 'TIER ' + req.tier;
+  document.getElementById('confirmHint').textContent = req.voice_ok ? 'SAY YES / NO OR CLICK' : 'CLICK TO ANSWER';
+  const started = Date.now();
+  const total = req.timeout_s * 1000;
+  const tick = () => {
+    const left = Math.max(0, total - (Date.now() - started));
+    document.getElementById('confirmCountdown').textContent = Math.ceil(left / 1000) + 'S';
+    document.getElementById('confirmBar').style.width = (100 * left / total) + '%';
+  };
+  tick();
+  confirmTimer = setInterval(tick, 250);
+  overlay.classList.add('show');
+  addLiveFeed('tool', '[Approval needed] ' + req.summary);
+}
+
+function answerConfirm(allowed) {
+  if (!currentConfirm || !ws) return;
+  ws.send(JSON.stringify({ type: 'confirm_response', id: currentConfirm.id, allowed }));
+}
+
+function onConfirmResolved(msg) {
+  const label = msg.allowed ? 'ALLOWED' : (msg.via === 'timeout' ? 'DENIED (NO ANSWER)' : 'DENIED');
+  confirmQueue = confirmQueue.filter(r => r.id !== msg.id);
+  if (currentConfirm && currentConfirm.id === msg.id) {
+    addMsg('system', label + ': ' + currentConfirm.summary);
+    showNextConfirm();
+  }
+}
+
+// ─── Temporary full access ───
+let elevTimer = null;
+
+function setElevation(active, remainingS) {
+  const badge = document.getElementById('elevBadge');
+  clearInterval(elevTimer);
+  if (!active) { badge.classList.remove('show'); return; }
+  const until = Date.now() + remainingS * 1000;
+  const tick = () => {
+    const left = Math.max(0, Math.round((until - Date.now()) / 1000));
+    document.getElementById('elevTime').textContent = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
+    if (left === 0) { clearInterval(elevTimer); badge.classList.remove('show'); }
+  };
+  tick();
+  elevTimer = setInterval(tick, 1000);
+  badge.classList.add('show');
+}
+
+function revokeElevation() {
+  if (ws) ws.send(JSON.stringify({ type: 'elevation_revoke' }));
 }
 
 // Load settings when Config tab is opened

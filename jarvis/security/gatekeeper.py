@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from jarvis.security import paths
+from jarvis.security import grants, paths
 from jarvis.security.audit import AuditLog
+from jarvis.security.elevation import Elevation
 from jarvis.security.policy import Policy, Tier, load_policy
 
 # Turn sources allowed to act. Timers, notifications and other background triggers are not.
@@ -105,11 +106,13 @@ def no_confirm_ui(_req: ConfirmRequest) -> bool:
 class Gatekeeper:
     def __init__(self, policy_loader: Callable[[], Policy] = load_policy,
                  confirmer: Confirmer = no_confirm_ui,
-                 audit: AuditLog | None = None):
+                 audit: AuditLog | None = None,
+                 elevation: Elevation | None = None):
         self._policy_loader = policy_loader
         self.confirmer = confirmer
         self._audit = audit
         self.policy = policy_loader()
+        self.elevation = elevation or Elevation(max_minutes=self.policy.elevation_max_minutes)
 
     @property
     def audit(self) -> AuditLog:
@@ -126,15 +129,20 @@ class Gatekeeper:
         if turn.stopped:
             return False, Tier.NEVER, "this turn was stopped after repeated blocks"
         tier, reason = classify(tool, args, self.policy)
+        tainted_confirm = False
         if tool in ACTING_TOOLS and turn.source not in USER_SOURCES:
             tier, reason = Tier.NEVER, f"only turns you start can act (this one came from '{turn.source}')"
         elif tool in ACTING_TOOLS and turn.tainted and tier < Tier.CONFIRM:
             tier, reason = Tier.CONFIRM, "untrusted content (web page, screen or clipboard) was read earlier in this turn"
+            tainted_confirm = True
 
         if tier == Tier.FREE:
             return True, tier, reason
         if tier == Tier.NEVER:
             return False, tier, reason
+        # Full access skips Tier 1 asks — but never the taint gate, which guards against injected instructions.
+        if tier == Tier.CONFIRM and not tainted_confirm and self.elevation.active():
+            return True, tier, f"temporary full access: {reason}"
         if self.confirmer(ConfirmRequest(turn, tool, args, tier, reason)):
             return True, tier, f"approved: {reason}"
         return False, tier, f"needs your OK: {reason}"
@@ -153,7 +161,12 @@ class Gatekeeper:
                 msg += " Stop now and tell the owner what was blocked."
             return msg
 
-        result = dispatch(tool, args)
+        if tier > Tier.FREE and (tool in _READ_PATH_TOOLS or tool in _WRITE_PATH_TOOLS):
+            # Approved outside the free folders: let file_ops open exactly this path, this once.
+            with grants.allow_once(paths.canonicalize(args.get("path", ""))):
+                result = dispatch(tool, args)
+        else:
+            result = dispatch(tool, args)
         if tool in self.policy.untrusted_tools:
             turn.tainted = True
         self.audit.record(turn.id, turn.source, tool, args, int(tier), "allow", reason, result)
@@ -166,8 +179,8 @@ class Gatekeeper:
             "SAFETY RULES (enforced in code; blocked actions fail):\n"
             f"- Free to use: files in {free}; apps, windows, media, volume, web search.\n"
             "- Never: Windows / Program Files folders, credentials, running code, shutdown, killing processes.\n"
-            "- Needs the owner's OK: files outside the free folders, overwriting a file, "
-            "risky hotkeys (alt+f4, win+r), reading the clipboard.\n"
+            "- Needs the owner's OK (Jarvis asks them automatically; just call the tool): files outside "
+            "the free folders, overwriting a file, risky hotkeys (alt+f4, win+r), reading the clipboard.\n"
             "- After reading a web page or the screen, acting in the same turn needs the owner's OK.\n"
             "- If a tool returns BLOCKED, do not retry or work around it; tell the owner in one sentence."
         )

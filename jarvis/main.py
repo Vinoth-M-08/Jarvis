@@ -18,7 +18,10 @@ from jarvis.tts import speak, speak_streamed, is_speaking, stop_speaking
 from jarvis.context import ContextManager
 from jarvis.memory import Memory
 from jarvis.tools.router import TOOL_SCHEMAS, dispatch
-from jarvis.security.gatekeeper import Gatekeeper, TurnContext
+from jarvis.security.gatekeeper import USER_SOURCES, ConfirmRequest, Gatekeeper, TurnContext
+from jarvis.security.confirm import ConfirmBroker
+from jarvis.security.elevation import parse_command as parse_elevation_command
+from jarvis.security.policy import Tier
 
 _MAX_TOOL_LOOPS = 15
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
@@ -115,6 +118,55 @@ def _get_openai_client(base_url: str, api_key: str = "lm-studio") -> OpenAI:
 context = ContextManager()
 memory = Memory()
 gatekeeper = Gatekeeper()
+
+
+def _listen_short_answer() -> str:
+    """Record one short spoken answer (for yes/no confirmations)."""
+    from jarvis.wake import pause_wake_mic, resume_wake_mic
+    pause_wake_mic()
+    time.sleep(0.15)
+    try:
+        audio = record_until_silence(max_seconds=6)
+    finally:
+        resume_wake_mic()
+    return transcribe_audio(audio)
+
+
+confirm_broker = ConfirmBroker(
+    broadcast=_broadcast,
+    speak=_speak_if_unmuted,
+    listen=_listen_short_answer,
+    abort_event=_abort,
+    timeout_s=gatekeeper.policy.confirm_timeout_s,
+)
+gatekeeper.confirmer = confirm_broker.ask
+gatekeeper.elevation.on_change = lambda active, remaining: _broadcast(
+    {"type": "elevation", "active": active, "remaining_s": remaining})
+gatekeeper.elevation.on_expire = lambda: _speak_if_unmuted("Full access ended.")
+
+
+def elevation_state() -> dict:
+    return {"type": "elevation", "active": gatekeeper.elevation.active(),
+            "remaining_s": gatekeeper.elevation.remaining_s()}
+
+
+def _handle_elevation_command(command: tuple[str, int], turn: TurnContext) -> str:
+    """Grant or end temporary full access. Granting always needs a click."""
+    action, minutes = command
+    if action == "revoke":
+        gatekeeper.elevation.revoke()
+        gatekeeper.audit.record(turn.id, turn.source, "full_access", {"action": "revoke"}, None, "allow", "revoked")
+        return "Full access is off."
+    minutes = max(1, min(minutes, gatekeeper.elevation.max_minutes))
+    reason = f"actions that normally need your OK will run without asking for {minutes} minutes"
+    req = ConfirmRequest(turn, "full_access", {"minutes": minutes}, Tier.STRONG, reason)
+    if not confirm_broker.ask(req):
+        gatekeeper.audit.record(turn.id, turn.source, "full_access", {"minutes": minutes}, 2, "deny", "not approved")
+        return "Okay, full access stays off."
+    granted = gatekeeper.elevation.grant(minutes)
+    gatekeeper.audit.record(turn.id, turn.source, "full_access", {"minutes": granted}, 2, "allow", reason)
+    return (f"Full access on for {granted} minutes. Deleting, overwriting and protected folders "
+            "still need you or stay blocked.")
 
 
 def _system_prompt() -> str:
@@ -366,6 +418,13 @@ def _process_request(user_text: str, source: str = "typed") -> str:
     turn = gatekeeper.new_turn(source)
     _play_beep()
     _broadcast({"type": "user", "text": user_text})
+
+    elevation_cmd = parse_elevation_command(user_text)
+    if elevation_cmd and source in USER_SOURCES:
+        response_text = _handle_elevation_command(elevation_cmd, turn)
+        _broadcast({"type": "response", "text": response_text})
+        return response_text
+
     _broadcast({"type": "status", "message": "Thinking..."})
 
     facts = memory.search_facts(user_text)

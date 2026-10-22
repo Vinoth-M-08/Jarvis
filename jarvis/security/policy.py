@@ -36,6 +36,8 @@ class Policy:
     untrusted_tools: set[str]
     max_denials_per_turn: int = 2
     audit_db: str = "data/audit.db"
+    confirm_timeout_s: float = 30.0
+    elevation_max_minutes: int = 15
 
 
 def load_policy(cfg: dict | None = None) -> Policy:
@@ -50,4 +52,6 @@ def load_policy(cfg: dict | None = None) -> Policy:
         untrusted_tools=set(sec.get("untrusted_tools", DEFAULT_UNTRUSTED_TOOLS)),
         max_denials_per_turn=int(sec.get("max_denials_per_turn", 2)),
         audit_db=sec.get("audit_db", "data/audit.db"),
+        confirm_timeout_s=float(sec.get("confirm_timeout_s", 30)),
+        elevation_max_minutes=int(sec.get("elevation_max_minutes", 15)),
     )

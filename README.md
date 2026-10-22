@@ -21,7 +21,7 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 | Phase | What | State |
 |---|---|---|
 | 0 | Setup, voice loop on a local model | ✅ Done |
-| 1 | Claude brain + gatekeeper + non-admin account | In progress — gatekeeper done |
+| 1 | Claude brain + gatekeeper + non-admin account | In progress — gatekeeper + confirm dialog done |
 | 2–7 | Router, usage meter, desktop control, browser, memory, extras | Planned |
 
 **Working now:** wake word → speech-to-text on the GPU → local LLM (Ollama,
@@ -32,16 +32,25 @@ folders blocked, only turns you start can act, taint gate after reading the web
 / screen / clipboard, and the turn stops after 2 blocks. Decisions are logged to
 `data/audit.db`.
 
+**Approvals:** when an action needs your OK, the HUD shows an **Allow / Deny**
+dialog and Jarvis asks out loud. Tier 1 — click or say "yes" / "no". Tier 2
+(e.g. overwriting a file) — click only. No answer in 30 s, or Esc, = deny.
+Say **"full access for 10 minutes"** (click to approve, max 15) to skip Tier 1
+asks for a while; the HUD shows a countdown with an END button, or say
+**"end full access"**. Tier 2, Tier 3 and the taint gate still apply during
+full access. The HUD only accepts requests from its own page (Origin check).
+
 **Known issues**
 
 - The end-of-speech wait is a fixed ~2 s. (`qwen3:4b` thinking is now off —
   `think: false` in `config.yaml` — which should cut most of the old ~8 s reply
   time; set `think: true` to turn reasoning back on.)
 - `set_volume` / `get_volume` report success but don't change anything.
-- No confirm dialog yet, so anything that needs your OK is declined for now:
-  files outside the free folders, overwriting a file, risky hotkeys, reading the
-  clipboard, and acting right after `read_screen` / `find_on_screen` (so the
-  "find text, then click it" flow stops after the find). The HUD dialog is next.
+- Approvals need the HUD open: Tier 2 (overwrite, full access) is click-only, and
+  with no HUD open those time out and are denied. Tier 1 can also be answered
+  by saying "yes" / "no".
+- The "find text on screen, then click it" flow asks for approval at the click,
+  because screen text counts as untrusted (taint gate).
 
 ---
 

@@ -16,6 +16,20 @@ _STATIC_DIR = Path(__file__).parent / "static"
 app = FastAPI(title="Jarvis")
 _clients: list[WebSocket] = []
 _loop: asyncio.AbstractEventLoop | None = None
+# Only the HUD's own page may drive Jarvis (PLAN.md §5.4); set from the port at startup.
+_allowed_origins: set[str] = {"http://localhost:7860", "http://127.0.0.1:7860"}
+
+
+def _origin_ok(origin: str | None) -> bool:
+    """Browsers always send Origin on cross-site requests and WebSockets; a missing one is a local non-browser client."""
+    return origin is None or origin in _allowed_origins
+
+
+@app.middleware("http")
+async def _origin_guard(request: Request, call_next):
+    if request.method not in ("GET", "HEAD", "OPTIONS") and not _origin_ok(request.headers.get("origin")):
+        return JSONResponse({"status": "error", "message": "cross-origin request blocked"}, status_code=403)
+    return await call_next(request)
 
 
 # ─── Capture the REAL event loop at startup ───
@@ -182,9 +196,15 @@ async def api_toggle_mute():
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    if not _origin_ok(ws.headers.get("origin")):
+        # A web page on another site must never be able to click "Allow" for you.
+        await ws.close(code=1008)
+        return
     await ws.accept()
     _clients.append(ws)
     await ws.send_text(json.dumps({"type": "connected", "message": "Jarvis online."}))
+    from jarvis.main import elevation_state
+    await ws.send_text(json.dumps(elevation_state()))
     try:
         while True:
             data = await ws.receive_text()
@@ -201,32 +221,58 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_text(json.dumps({"type": "response", "text": "Stopped."}))
                     continue
 
-                from jarvis.main import _process_request, _Aborted
-                loop = asyncio.get_event_loop()
-                try:
-                    response = await loop.run_in_executor(
-                        None, _process_request, user_text, "typed",
-                    )
-                    from jarvis.main import _speak_streamed_if_unmuted
-                    threading.Thread(target=_speak_streamed_if_unmuted, args=(response,), daemon=True).start()
-                except _Aborted:
-                    await ws.send_text(json.dumps({"type": "response", "text": "Stopped."}))
-                except Exception as e:
-                    await ws.send_text(json.dumps({"type": "response", "text": f"Error: {e}"}))
+                # Run as a task so this loop keeps reading — Allow/Deny and Stop must
+                # get through while the request is still running.
+                task = asyncio.create_task(_handle_chat(ws, user_text))
+                _tasks.add(task)
+                task.add_done_callback(_tasks.discard)
 
             elif msg.get("type") == "interrupt":
                 from jarvis.main import abort_all
                 abort_all()
+
+            elif msg.get("type") == "confirm_response":
+                from jarvis.main import confirm_broker
+                confirm_broker.resolve(str(msg.get("id", "")), bool(msg.get("allowed")), via="click")
+
+            elif msg.get("type") == "elevation_revoke":
+                from jarvis.main import gatekeeper
+                gatekeeper.elevation.revoke()
 
     except WebSocketDisconnect:
         if ws in _clients:
             _clients.remove(ws)
 
 
+_tasks: set[asyncio.Task] = set()  # keep references so running chat tasks aren't garbage-collected
+
+
+async def _handle_chat(ws: WebSocket, user_text: str) -> None:
+    from jarvis.main import _process_request, _Aborted, _speak_streamed_if_unmuted, _abort
+    _abort.clear()  # same as a typed (F2) command: a new request starts un-aborted
+    loop = asyncio.get_event_loop()
+    try:
+        response = await loop.run_in_executor(None, _process_request, user_text, "typed")
+        threading.Thread(target=_speak_streamed_if_unmuted, args=(response,), daemon=True).start()
+    except _Aborted:
+        await _safe_send(ws, {"type": "response", "text": "Stopped."})
+    except Exception as e:
+        await _safe_send(ws, {"type": "response", "text": f"Error: {e}"})
+
+
+async def _safe_send(ws: WebSocket, event: dict) -> None:
+    try:
+        await ws.send_text(json.dumps(event))
+    except Exception:
+        pass  # client went away
+
+
 def start_web_background(port: int = 7860) -> None:
     """Launch web UI in a daemon thread. Non-blocking."""
     from jarvis.main import register_event_listener
     register_event_listener(_broadcast_to_ws)
+    _allowed_origins.clear()
+    _allowed_origins.update({f"http://localhost:{port}", f"http://127.0.0.1:{port}"})
 
     def _run():
         loop = asyncio.new_event_loop()
