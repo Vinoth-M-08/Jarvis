@@ -241,7 +241,8 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif msg.get("type") == "confirm_response":
                 from jarvis.main import confirm_broker
-                confirm_broker.resolve(str(msg.get("id", "")), bool(msg.get("allowed")), via="click")
+                confirm_broker.resolve(str(msg.get("id", "")), bool(msg.get("allowed")), via="click",
+                                       choice=msg.get("choice"))
 
             elif msg.get("type") == "elevation_revoke":
                 from jarvis.main import gatekeeper

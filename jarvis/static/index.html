@@ -554,6 +554,12 @@
   .confirm-modal.strong .modal-title { color: var(--red); }
   .confirm-summary { font-size: 15px; color: var(--text); margin-bottom: 10px; word-break: break-word; }
   .confirm-reason { font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
+  .confirm-steps {
+    margin: 0 0 10px 18px; padding: 0; font-size: 12px; color: var(--text);
+    max-height: 180px; overflow-y: auto; word-break: break-word;
+  }
+  .confirm-steps:empty { display: none; }
+  .confirm-steps li { margin-bottom: 4px; }
   .confirm-meta {
     display: flex; justify-content: space-between; align-items: center;
     font-family: 'Orbitron', monospace; font-size: 9px; letter-spacing: 1px; color: var(--text-dim);
@@ -869,6 +875,7 @@
   <div class="modal confirm-modal" id="confirmModal" role="alertdialog" aria-labelledby="confirmTitle">
     <div class="modal-title" id="confirmTitle">Approval needed</div>
     <div class="confirm-summary" id="confirmSummary"></div>
+    <ol class="confirm-steps" id="confirmSteps"></ol>
     <div class="confirm-reason" id="confirmReason"></div>
     <div class="confirm-meta">
       <span class="confirm-tier" id="confirmTier"></span>
@@ -878,6 +885,7 @@
     <div class="confirm-bar"><div class="confirm-bar-fill" id="confirmBar"></div></div>
     <div class="modal-btns">
       <button class="settings-btn danger" onclick="answerConfirm(false)">Deny</button>
+      <button class="settings-btn" id="confirmAltBtn" style="display:none" onclick="answerConfirm(false, 'alternative')"></button>
       <button class="settings-btn allow" onclick="answerConfirm(true)">Allow</button>
     </div>
   </div>
@@ -1246,6 +1254,16 @@ function showNextConfirm() {
   document.getElementById('confirmTitle').textContent = strong ? 'Strong approval needed' : 'Approval needed';
   document.getElementById('confirmSummary').textContent = req.summary;
   document.getElementById('confirmReason').textContent = req.reason;
+  const stepsEl = document.getElementById('confirmSteps');
+  stepsEl.innerHTML = '';
+  (req.steps || []).forEach(s => { const li = document.createElement('li'); li.textContent = s; stepsEl.appendChild(li); });
+  const altBtn = document.getElementById('confirmAltBtn');
+  if (req.alternative) {
+    altBtn.textContent = 'Safer: ' + req.alternative;
+    altBtn.style.display = '';
+  } else {
+    altBtn.style.display = 'none';
+  }
   document.getElementById('confirmTier').textContent = 'TIER ' + req.tier;
   document.getElementById('confirmHint').textContent = req.voice_ok ? 'SAY YES / NO OR CLICK' : 'CLICK TO ANSWER';
   const started = Date.now();
@@ -1261,9 +1279,9 @@ function showNextConfirm() {
   addLiveFeed('tool', '[Approval needed] ' + req.summary);
 }
 
-function answerConfirm(allowed) {
+function answerConfirm(allowed, choice) {
   if (!currentConfirm || !ws) return;
-  ws.send(JSON.stringify({ type: 'confirm_response', id: currentConfirm.id, allowed }));
+  ws.send(JSON.stringify({ type: 'confirm_response', id: currentConfirm.id, allowed, choice: choice || null }));
 }
 
 function onConfirmResolved(msg) {

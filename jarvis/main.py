@@ -34,6 +34,10 @@ from jarvis.brain.selector import BrainSelector, LocalBackup
 from jarvis.gpu import free_vram_gb, gpu_stats
 from jarvis.notify import Notifier
 from jarvis.tools import system as system_tools
+from jarvis.decision.decide import DecisionMaker
+from jarvis.judge import Judge, PROPOSE_PLAN_SCHEMA
+
+_PLAN_HINT = "[This request needs a plan: call propose_plan with every step (tool + exact args) before acting.]"
 
 _MAX_TOOL_LOOPS = 15
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
@@ -163,6 +167,16 @@ def usage_snapshot() -> dict:
     }
 
 
+_decision_cfg = _startup_cfg.get("decision") or {}
+_thresholds = _decision_cfg.get("thresholds") or {}
+decision_maker = DecisionMaker(
+    provider=str(_decision_cfg.get("provider", "rules")),
+    local_for_simple=bool(_decision_cfg.get("local_for_simple", False)),
+    claude_complexity=int(_thresholds.get("claude_complexity", 5)),
+    unclear_threshold=float(_thresholds.get("unclear", 0.7)),
+)
+_needs_plan_threshold = float(_thresholds.get("needs_plan", 0.5))
+
 command_router = CommandRouter(set(APP_MAP))
 answer_cache = AnswerCache(_cache_cfg.get("db", "data/cache.db"),
                            ttl_days=float((_cache_cfg.get("answers") or {}).get("ttl_days", 7)))
@@ -195,6 +209,7 @@ confirm_broker = ConfirmBroker(
     timeout_s=gatekeeper.policy.confirm_timeout_s,
 )
 gatekeeper.confirmer = confirm_broker.ask
+judge = Judge(gatekeeper, lambda req, steps, alt: confirm_broker.ask_choice(req, steps, alt))
 gatekeeper.elevation.on_change = lambda active, remaining: _broadcast(
     {"type": "elevation", "active": active, "remaining_s": remaining})
 gatekeeper.elevation.on_expire = lambda: notifier.routine("Full access ended.")
@@ -235,6 +250,8 @@ def _system_prompt(with_time: bool = True) -> str:
         "You are Jarvis, a fully agentic personal AI assistant with screen vision and desktop control. "
         "Be concise, confident, and helpful. Do what your owner asks, within the safety rules below.\n\n"
         f"{gatekeeper.policy_prompt()}\n\n"
+        "PLANS: for a request with several steps or one that changes files, call propose_plan first "
+        "with every step (tool + exact args); the owner approves once. If it's rejected or declined, don't do it.\n\n"
         "AGENTIC WORKFLOW for UI tasks:\n"
         "1. focus_window — bring app to front\n"
         "2. find_on_screen — locate text/buttons (returns x,y coordinates)\n"
@@ -322,7 +339,7 @@ def _call_openai_provider(provider_cfg: dict, temperature: float, full_messages:
         resp = client.chat.completions.create(
             model=model,
             messages=full_messages,
-            tools=TOOL_SCHEMAS,
+            tools=_tools_for(turn),
             temperature=temperature,
         )
         msg = resp.choices[0].message
@@ -358,7 +375,7 @@ def _call_ollama_provider(provider_cfg: dict, temperature: float, full_messages:
     tool_count = 0
     for _ in range(_MAX_TOOL_LOOPS):
         _check_abort()
-        response = ollama.chat(model=model, messages=full_messages, tools=TOOL_SCHEMAS, think=think,
+        response = ollama.chat(model=model, messages=full_messages, tools=_tools_for(turn), think=think,
                                keep_alive=provider_cfg.get("keep_alive", _brain_cfg.get("backup_keep_alive", "5m")))
         if response.message.tool_calls:
             full_messages.append(response.message.model_dump())
@@ -462,7 +479,7 @@ def _get_claude_brain(provider_cfg: dict) -> ClaudeBrain:
     if removed:
         print(f"[Claude] Removed {', '.join(removed)} from the environment so Claude uses your subscription login.")
     _claude_brain = ClaudeBrain(
-        tool_schemas=TOOL_SCHEMAS,
+        tool_schemas=TOOL_SCHEMAS + [PROPOSE_PLAN_SCHEMA],
         run_tool=_run_tool_for_claude,
         system_prompt=lambda: _system_prompt(with_time=False),
         model=model,
@@ -479,6 +496,8 @@ def _call_claude_provider(provider_cfg: dict, user_text: str, facts: list[str], 
     parts = [f"[{_now()}]"]
     if facts:
         parts.append("Relevant context from memory: " + "; ".join(facts))
+    if turn.needs_plan:
+        parts.append(_PLAN_HINT)
     parts.append(user_text)
     try:
         text = _get_claude_brain(provider_cfg).ask("\n".join(parts), turn, _abort)
@@ -489,8 +508,17 @@ def _call_claude_provider(provider_cfg: dict, user_text: str, facts: list[str], 
     return text
 
 
+def _tools_for(turn: TurnContext) -> list[dict]:
+    """Tool trimming for the local brain: only what the decision maker picked (+ propose_plan)."""
+    names = turn.tool_hint
+    tools = TOOL_SCHEMAS if names is None else [s for s in TOOL_SCHEMAS if s["function"]["name"] in names]
+    return tools + [PROPOSE_PLAN_SCHEMA]
+
+
 def _exec_tool_with_retry(turn: TurnContext, name: str, args: dict) -> str:
     """Execute a tool through the gatekeeper, retry once on failure (never on a block)."""
+    if name == "propose_plan":
+        return judge.propose(turn, args)
     result = gatekeeper.run(turn, name, args, dispatch)
     if result.startswith("Tool '") and "failed:" in result:
         time.sleep(0.5)
@@ -637,13 +665,23 @@ def _process_request_inner(user_text: str, source: str = "typed") -> str:
         _broadcast({"type": "response", "text": quick})
         return quick
 
+    decision = decision_maker.decide(user_text)
+    _broadcast(decision.as_event())
+    if decision.route == "ask":
+        # Too vague to act on — ask before spending any tokens.
+        _broadcast({"type": "response", "text": decision.clarify_question})
+        return decision.clarify_question
+    turn.needs_plan = decision.needs_plan >= _needs_plan_threshold
+    turn.tool_hint = decision.tool_names()
+
     _broadcast({"type": "status", "message": "Thinking..."})
 
     facts = memory.search_facts(user_text)
     response_text = None
 
     notice = ""
-    if brain_selector.choose(uses_claude, gate.use_local) == "claude":
+    use_local = gate.use_local or decision.route == "local"
+    if brain_selector.choose(uses_claude, use_local) == "claude":
         try:
             response_text = _call_claude_provider(provider, user_text, facts, turn)
             if brain_selector.claude_ok():
@@ -668,6 +706,8 @@ def _process_request_inner(user_text: str, source: str = "typed") -> str:
         if facts:
             facts_block = "Relevant context from memory: " + "; ".join(facts)
             messages = [{"role": "system", "content": facts_block}] + messages
+        if turn.needs_plan:
+            messages.append({"role": "system", "content": _PLAN_HINT})
         messages.append({"role": "user", "content": user_text})
 
         full_messages = [{"role": "system", "content": _system_prompt()}] + messages

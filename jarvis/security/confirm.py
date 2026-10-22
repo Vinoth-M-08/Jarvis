@@ -33,6 +33,8 @@ def describe(tool: str, args: dict) -> str:
     """One short line describing the action, for the HUD and the spoken question."""
     if tool == "full_access":
         return f"turn on full access for {args.get('minutes')} minutes"
+    if tool == "plan":
+        return f"run this plan: {args.get('intent', '')}"
     if "path" in args:
         return f"{tool.replace('_', ' ')} {args['path']}"
     if tool == "press_key":
@@ -55,6 +57,7 @@ class _Pending:
     done: threading.Event = field(default_factory=threading.Event)
     allowed: bool = False
     via: str = "timeout"
+    choice: str = "deny"       # "allow" | "alternative" | "deny"
 
 
 class ConfirmBroker:
@@ -75,6 +78,11 @@ class ConfirmBroker:
         self._lock = threading.Lock()
 
     def ask(self, req: ConfirmRequest) -> bool:
+        return self.ask_choice(req) == "allow"
+
+    def ask_choice(self, req: ConfirmRequest, steps: list[str] | None = None,
+                   alternative: str | None = None) -> str:
+        """Like ask(), for plan cards: returns "allow", "alternative" (the safer option) or "deny"."""
         rid = uuid.uuid4().hex[:10]
         pending = _Pending(req)
         with self._lock:
@@ -85,6 +93,7 @@ class ConfirmBroker:
             "type": "confirm_request", "id": rid, "tool": req.tool, "summary": summary,
             "tier": int(req.tier), "tier_name": req.tier.name, "reason": req.reason,
             "voice_ok": voice_ok, "timeout_s": self.timeout_s,
+            "steps": steps or [], "alternative": alternative or "",
         })
         if self._speak:
             how = "Say yes or no, or click on the screen." if voice_ok else "Please click Allow or Deny on the screen."
@@ -101,9 +110,9 @@ class ConfirmBroker:
             self._pending.pop(rid, None)
         self._broadcast({"type": "confirm_resolved", "id": rid,
                          "allowed": pending.allowed, "via": pending.via})
-        return pending.allowed
+        return pending.choice if pending.done.is_set() else "deny"
 
-    def resolve(self, rid: str, allowed: bool, via: str = "click") -> bool:
+    def resolve(self, rid: str, allowed: bool, via: str = "click", choice: str | None = None) -> bool:
         """Answer a pending request. Voice answers are ignored for Tier 2. Returns True if applied."""
         with self._lock:
             pending = self._pending.get(rid)
@@ -113,6 +122,7 @@ class ConfirmBroker:
                 return False
             pending.allowed = bool(allowed)
             pending.via = via
+            pending.choice = "allow" if allowed else (choice if choice == "alternative" else "deny")
             pending.done.set()
             return True
 

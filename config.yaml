@@ -31,6 +31,13 @@ brain:
   min_free_vram_gb_for_backup: 4
   est_limit_5h_requests: null
   est_limit_7d_requests: null
+decision:
+  provider: rules
+  local_for_simple: false
+  thresholds:
+    unclear: 0.7
+    needs_plan: 0.5
+    claude_complexity: 5
 cache:
   db: data/cache.db
   answers:

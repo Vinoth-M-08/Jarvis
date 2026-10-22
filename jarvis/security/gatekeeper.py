@@ -70,6 +70,17 @@ def classify(tool: str, args: dict, policy: Policy) -> tuple[Tier, str]:
     return Tier.NEVER, f"'{tool}' is not an allowed tool"
 
 
+def step_key(tool: str, args: dict) -> str:
+    """Identity of one action, for matching approved plan steps: tool + exact target."""
+    import json
+    if tool in _READ_PATH_TOOLS or tool in _WRITE_PATH_TOOLS:
+        try:
+            return f"{tool}:{paths.canonicalize(args.get('path', ''))}"
+        except paths.UnsafePath:
+            return f"{tool}:!unsafe"
+    return f"{tool}:{json.dumps(args, sort_keys=True, default=str)}"
+
+
 def _classify_path(tool: str, path: str, policy: Policy) -> tuple[Tier, str]:
     try:
         target = paths.canonicalize(path)
@@ -94,6 +105,11 @@ class TurnContext:
     denials: int = 0
     stopped: bool = False
     blocked: list[str] = field(default_factory=list)
+    # Judge-first (PLAN.md §4.7): set by the decision maker / propose_plan
+    needs_plan: bool = False
+    plan_accepted: bool = False
+    approved_steps: set[str] = field(default_factory=set)
+    tool_hint: set[str] | None = None   # tools the local brain gets for this request (None = all)
 
     def stop_message(self) -> str:
         reasons = "; ".join(dict.fromkeys(self.blocked)) or "safety rules"
@@ -139,21 +155,27 @@ class Gatekeeper:
         self.policy = self._policy_loader()
         return TurnContext(source=source)
 
+    def effective_tier(self, turn: TurnContext, tool: str, args: dict) -> tuple[Tier, str, bool]:
+        """Tier after the turn rules (speech-only acting, taint gate). Third value: raised by the taint gate."""
+        tier, reason = classify(tool, args, self.policy)
+        if tool in ACTING_TOOLS and turn.source not in USER_SOURCES:
+            return Tier.NEVER, f"only turns you start can act (this one came from '{turn.source}')", False
+        if tool in ACTING_TOOLS and turn.tainted and tier < Tier.CONFIRM:
+            return Tier.CONFIRM, "untrusted content (web page, screen or clipboard) was read earlier in this turn", True
+        return tier, reason, False
+
     def check(self, turn: TurnContext, tool: str, args: dict) -> tuple[bool, Tier, str]:
         if turn.stopped:
             return False, Tier.NEVER, "this turn was stopped after repeated blocks"
-        tier, reason = classify(tool, args, self.policy)
-        tainted_confirm = False
-        if tool in ACTING_TOOLS and turn.source not in USER_SOURCES:
-            tier, reason = Tier.NEVER, f"only turns you start can act (this one came from '{turn.source}')"
-        elif tool in ACTING_TOOLS and turn.tainted and tier < Tier.CONFIRM:
-            tier, reason = Tier.CONFIRM, "untrusted content (web page, screen or clipboard) was read earlier in this turn"
-            tainted_confirm = True
+        tier, reason, tainted_confirm = self.effective_tier(turn, tool, args)
 
         if tier == Tier.FREE:
             return True, tier, reason
         if tier == Tier.NEVER:
             return False, tier, reason
+        # A step the owner approved as part of a plan runs without asking again — exact target only.
+        if turn.plan_accepted and step_key(tool, args) in turn.approved_steps:
+            return True, tier, f"approved in plan: {reason}"
         # Full access skips Tier 1 asks — but never the taint gate, which guards against injected instructions.
         if tier == Tier.CONFIRM and not tainted_confirm and self.elevation.active():
             return True, tier, f"temporary full access: {reason}"
@@ -164,6 +186,11 @@ class Gatekeeper:
     def run(self, turn: TurnContext, tool: str, args: dict, dispatch: Callable[[str, dict], str]) -> str:
         """Check, then dispatch if allowed. Returns the tool result or a BLOCKED message for the model."""
         turn.tool_calls += 1
+        if turn.needs_plan and not turn.plan_accepted and tool in ACTING_TOOLS and not turn.stopped:
+            # Not counted as a denial: the model just has to plan first.
+            self.audit.record(turn.id, turn.source, tool, args, None, "hold", "plan required first")
+            return ("WAIT: this request needs a plan first. Call propose_plan with every step "
+                    "(tool + exact args) before using acting tools.")
         allowed, tier, reason = self.check(turn, tool, args)
         if not allowed:
             turn.denials += 1
