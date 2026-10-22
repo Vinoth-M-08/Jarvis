@@ -25,6 +25,7 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 | 2 | Router, answer cache, brain selector + on-demand backup, gauges, notices, decision maker, plan approval | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) |
 | 3 | Desktop control via Windows-MCP, behind the gatekeeper | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §14 |
 | 4 | Browser: Jarvis's own visible Chrome via Playwright | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §15 |
+| HUD | Bento tiles + particle swarm; settings drawer with brain and Claude model; voice settings commands | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §3.7–3.16, §16 |
 | 6 (part) | **Task memory**: one markdown file per task + search ("what did I do last week?"); secrets never saved | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §17 |
 | 5–7 | Voice quality, rest of memory, extras | Planned |
 
@@ -64,7 +65,7 @@ Token use per request is printed and sent to the HUD as a `usage` event.
   off and the local brain answers. The local model loads only when needed (after a
   free-VRAM check) and is unloaded when Claude is back.
 - **Gauges**: Claude requests/tokens in the 5-hour and 7-day windows, today's
-  budget, GPU VRAM — in the HUD header (`GET /api/usage`).
+  budget, GPU VRAM — in the HUD's Claude and GPU tiles (`GET /api/usage`).
 - **Notices** (`jarvis/notify.py`): urgent ones spoken now (timers), routine ones
   batched at the next pause.
 - **Decision maker** (`jarvis/decision/`): rules decide route, risk, complexity,
@@ -177,10 +178,12 @@ ollama pull qwen3:4b
 **Claude brain:** install [Claude Code](https://code.claude.com/docs), run
 `claude` once and `/login` with your **Claude subscription** account (not an
 API key). The provider is `claude` in `config.yaml` (`model: claude-opus-5-5`;
-if your plan doesn't include Opus, set `claude-sonnet-5-5`). To run fully
-local instead, set `llm.active_provider: ollama`. Edit the Claude provider in
-`config.yaml`, not in the HUD provider dialog (that dialog only knows the
-OpenAI/Ollama types).
+if your plan doesn't include Opus, pick Sonnet). Change the model in the HUD
+(**Settings → Claude model**: Opus / Sonnet / Haiku 5.5) or say **"use Sonnet"** —
+it applies from the next request, no restart. To run fully local, say **"use the
+local brain"** or pick it in the header dropdown. Other Claude settings
+(`max_turns`) are only in `config.yaml`; the HUD's "add a brain" form is for
+OpenAI-compatible / Ollama brains.
 
 Speech models (Whisper `small`, Kokoro, the wake word) download on first run.
 CUDA libraries for Whisper come from the `nvidia-cublas-cu12` /
@@ -204,13 +207,41 @@ http://localhost:7860 (localhost only).
 | **F2** | Type a command in the console |
 | **Insert** | Mute / unmute Jarvis's voice |
 | HUD chat box | Type a command |
+| HUD **Settings** (gear) | Brains, Claude model, voice, speech-to-text, wake word |
+
+**HUD** (`jarvis/static/index.html`, one page, no build step) — bento tiles:
+
+| Tile | Shows |
+|---|---|
+| Header | Connection, ask box, **brain dropdown**, mute, **Settings**, Stop |
+| Jarvis (big) | A 130-dot **particle swarm** that changes shape and colour with what Jarvis is doing, plus a caption |
+| Approvals | "Nothing needs you", or the amber **Can I go ahead?** card: steps, safer option, countdown, Deny / Allow |
+| Full access | Countdown and **End** while full access is on |
+| Current task (cream) | This request's steps — spinner while running, ✓ done, ! blocked |
+| Claude (blue) | Requests today / budget, 5-hour and 7-day counts |
+| GPU (mint) | VRAM used, temperature, whether the backup brain is loaded |
+| Conversation · Today · Systems | Chat log · last actions (done / blocked / waiting) · Claude, Backup, Desktop, Browser dots |
+
+| State | Swarm | Colour |
+|---|---|---|
+| Idle | Loose drifting cloud | Grey |
+| Listening | Pulsing ring | Blue |
+| Thinking | Three spinning clusters | Purple |
+| Speaking | Travelling wave, reply as caption | Green |
+| Needs your OK | A hopping **?** | Amber |
+
+When Jarvis isn't reachable the HUD says so instead of showing zeros: the brain
+dropdown reads **"Brain: offline"** and the tiles **"Not connected"**; they fill in
+by themselves once Jarvis is up. Tiles stack on narrow windows.
 
 **Troubleshooting**
 
 | Problem | Check |
 |---|---|
 | Doesn't react to "Hey Jarvis" | Windows mic not muted: *Settings → System → Sound → Input*. Then lower `wake_word.threshold` in `config.yaml` (e.g. 0.3). |
-| No voice | Insert / HUD mute toggled? Windows output device and volume. |
+| No voice | Insert / HUD mute toggled, or say "talk again". Windows output device and volume. |
+| HUD shows "Brain: offline" / "Not connected" | Jarvis isn't running, or the page was opened as a file. Run `start.bat`, open http://localhost:7860, Ctrl+F5. |
+| Old-looking HUD after `git pull` | Ctrl+F5 to reload the page. |
 | Brain errors | Ollama running? `ollama list` should show `qwen3:4b`. |
 
 ---
@@ -223,13 +254,17 @@ start.bat            launcher
 jarvis/
   main.py            pipeline: wake → listen → think → speak
   wake.py stt.py tts.py
-  web.py static/     HUD (FastAPI + WebSocket, 127.0.0.1)
+  web.py static/     HUD (FastAPI + WebSocket, 127.0.0.1; static/index.html = bento + swarm)
   memory.py context.py llm.py
+  tasks.py           task memory: a markdown file per task + search_tasks
+  router_cmds.py     0-token instant commands (incl. brain / model / mute / speed / forget)
+  decision/ judge.py decision maker + plan approval
   tools/router.py    tool list + dispatch (risky tools disabled)
-  security/          gatekeeper, policy, path checks, shell parser, audit log
-  brain/             Claude Agent SDK brain + subscription env guard
+  tools/windows_mcp.py tools/browser/   desktop control, Jarvis's own Chrome
+  security/          gatekeeper, policy, path checks, shell parser, audit log, secret redaction
+  brain/             Claude Agent SDK brain + subscription env guard, selector, usage
 tests/               pytest
-data/                audit.db and other runtime data (git-ignored)
+data/                audit.db, usage.db, tasks/ (your task files) and other runtime data (git-ignored)
 PLAN.md              full build plan
 NVIDIA_UPGRADES.md   GPU extras (Broadcast mic, CUDA checks, VRAM gauge)
 ```

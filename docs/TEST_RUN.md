@@ -207,7 +207,10 @@ Hard-refresh the HUD (Ctrl+F5) after `git pull`.
 | 16.7 | Today tile | Shows the last actions with done / blocked / waiting | |
 | 16.8 | Systems tile | Desktop green once Windows-MCP started; Browser green after 15.1 | |
 | 16.9 | Settings (gear) | Drawer lists brains, Use/Edit/Delete work; Claude model dropdown shows the current model; Save settings shows "Saved" | |
-| 16.10 | Narrow the window to phone width | Tiles stack, no sideways scrolling | |
+| 16.10 | Narrow the window to phone width | Tiles stack, no sideways scrolling; Settings shows as a gear only | |
+| 16.11 | Header on a wide window | Gear button reads **Settings**; header fits on one line | |
+| 16.12 | Close Jarvis (Esc then close the console) with the HUD open | Brain dropdown → "Brain: offline"; Claude / GPU / Today tiles → "Not connected" (never "undefined") | |
+| 16.13 | Start Jarvis again, keep the same HUD tab | Within a few seconds it reconnects and the dropdown and tiles fill in by themselves | |
 
 ## 17. Task memory (Phase 6, early)
 

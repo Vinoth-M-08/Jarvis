@@ -119,7 +119,7 @@
 | Browser | **Playwright**, headed Chrome, dedicated profile | ours / Playwright MCP | Website traffic only |
 | Files | Agent SDK file tools limited to approved drives + fork's `file_ops` path check | SDK + fork | No |
 | Memory | **Markdown files, one fact per file** (`data/memory/*.md`, easy to read/edit/delete) + ChromaDB index for search + SQLite (history, summaries, audit, usage) | fork + ours | Only selected facts per request |
-| UI | FastAPI + WebSocket HUD (+ confirm dialog, usage meter) | fork + ours | No (localhost) |
+| UI | FastAPI + WebSocket HUD — bento tiles + particle-swarm object (approvals, full access, current task, Claude/GPU gauges, activity, systems, settings drawer with brain + Claude model) | fork + ours | No (localhost) |
 | Secrets | Windows Credential Manager via `keyring` | ours | — |
 | Tests | pytest | fork + ours | — |
 
