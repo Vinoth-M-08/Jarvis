@@ -22,6 +22,8 @@ from jarvis.security.gatekeeper import USER_SOURCES, ConfirmRequest, Gatekeeper,
 from jarvis.security.confirm import ConfirmBroker
 from jarvis.security.elevation import parse_command as parse_elevation_command
 from jarvis.security.policy import Tier
+from jarvis.brain.claude_agent import BrainAborted, ClaudeBrain
+from jarvis.brain.claude_env import scrub_process_env
 
 _MAX_TOOL_LOOPS = 15
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
@@ -169,8 +171,12 @@ def _handle_elevation_command(command: tuple[str, int], turn: TurnContext) -> st
             "still need you or stay blocked.")
 
 
-def _system_prompt() -> str:
-    now = datetime.now().strftime("%A, %B %d %Y, %I:%M %p")
+def _now() -> str:
+    return datetime.now().strftime("%A, %B %d %Y, %I:%M %p")
+
+
+def _system_prompt(with_time: bool = True) -> str:
+    """with_time=False for the persistent Claude session, which gets the time with each request instead."""
     return (
         "You are Jarvis, a fully agentic personal AI assistant with screen vision and desktop control. "
         "Be concise, confident, and helpful. Do what your owner asks, within the safety rules below.\n\n"
@@ -187,8 +193,8 @@ def _system_prompt() -> str:
         "- For typing in fields: click_at the field first, then type_text\n"
         "- Use press_key for keyboard shortcuts (ctrl+t, alt+f4, etc)\n"
         "- If a tool fails, try once more before giving up\n\n"
-        "Answer in 1-3 sentences unless more is clearly needed. "
-        f"Current date and time: {now}."
+        "Answer in 1-3 sentences unless more is clearly needed."
+        + (f" Current date and time: {_now()}." if with_time else "")
     )
 
 
@@ -333,10 +339,95 @@ def _call_llm(full_messages: list[dict], turn: TurnContext) -> str:
     provider = providers.get(active, {})
     ptype = provider.get("type", "ollama")
 
+    if ptype == "claude_agent":
+        # Claude is handled in _process_request; here it means Claude failed — use the local brain.
+        provider = providers.get("ollama", {"model": "qwen3:4b"})
+        ptype = "ollama"
+
     if ptype == "openai":
         return _call_openai_provider(provider, temperature, full_messages, turn)
     else:
         return _call_ollama_provider(provider, temperature, full_messages, turn)
+
+
+# ─── Claude brain (Claude Agent SDK on your subscription) ───
+
+_claude_brain: ClaudeBrain | None = None
+
+
+def _active_provider_cfg() -> dict:
+    llm_cfg = _load_config().get("llm", {})
+    return llm_cfg.get("providers", {}).get(llm_cfg.get("active_provider", "ollama"), {})
+
+
+def _run_tool_for_claude(turn: TurnContext | None, name: str, args: dict) -> str:
+    return _exec_tool_with_retry(turn or gatekeeper.new_turn("system"), name, args)
+
+
+def _on_claude_tool(name: str, args: dict) -> None:
+    _broadcast({"type": "tool", "name": name, "args": args})
+
+
+def _on_claude_tool_result(name: str, result: str) -> None:
+    print(f"[Tool: {name}] {result[:120]}")
+    _broadcast({"type": "tool_result", "name": name, "result": result[:200]})
+
+
+def _on_claude_usage(result) -> None:
+    usage = result.usage or {}
+    event = {
+        "type": "usage", "brain": "claude",
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+        "cost_usd_estimate": result.total_cost_usd,
+        "num_turns": result.num_turns,
+    }
+    print(f"[Claude] in={event['input_tokens']} out={event['output_tokens']} "
+          f"cache_read={event['cache_read_input_tokens']} turns={event['num_turns']}")
+    _broadcast(event)
+
+
+def _get_claude_brain(provider_cfg: dict) -> ClaudeBrain:
+    global _claude_brain
+    model = provider_cfg.get("model", "claude-opus-5-5")
+    max_turns = int(provider_cfg.get("max_turns", _MAX_TOOL_LOOPS))
+    if _claude_brain is not None and (_claude_brain.model, _claude_brain.max_turns) == (model, max_turns):
+        return _claude_brain
+    if _claude_brain is not None:
+        try:
+            _claude_brain.close()
+        except Exception:
+            pass
+    removed = scrub_process_env()
+    if removed:
+        print(f"[Claude] Removed {', '.join(removed)} from the environment so Claude uses your subscription login.")
+    _claude_brain = ClaudeBrain(
+        tool_schemas=TOOL_SCHEMAS,
+        run_tool=_run_tool_for_claude,
+        system_prompt=lambda: _system_prompt(with_time=False),
+        model=model,
+        max_turns=max_turns,
+        on_tool=_on_claude_tool,
+        on_tool_result=_on_claude_tool_result,
+        on_usage=_on_claude_usage,
+    )
+    return _claude_brain
+
+
+def _call_claude_provider(provider_cfg: dict, user_text: str, facts: list[str], turn: TurnContext) -> str:
+    """One request on the persistent Claude session. Claude keeps the history, so only the new text is sent."""
+    parts = [f"[{_now()}]"]
+    if facts:
+        parts.append("Relevant context from memory: " + "; ".join(facts))
+    parts.append(user_text)
+    try:
+        text = _get_claude_brain(provider_cfg).ask("\n".join(parts), turn, _abort)
+    except BrainAborted:
+        raise _Aborted()
+    if turn.stopped:
+        return turn.stop_message()
+    return text
 
 
 def _exec_tool_with_retry(turn: TurnContext, name: str, args: dict) -> str:
@@ -428,26 +519,40 @@ def _process_request(user_text: str, source: str = "typed") -> str:
     _broadcast({"type": "status", "message": "Thinking..."})
 
     facts = memory.search_facts(user_text)
-    messages = context.get_messages()
-    if facts:
-        facts_block = "Relevant context from memory: " + "; ".join(facts)
-        messages = [{"role": "system", "content": facts_block}] + messages
-    messages.append({"role": "user", "content": user_text})
+    response_text = None
 
-    full_messages = [{"role": "system", "content": _system_prompt()}] + messages
+    provider = _active_provider_cfg()
+    if provider.get("type") == "claude_agent":
+        try:
+            response_text = _call_claude_provider(provider, user_text, facts, turn)
+        except _Aborted:
+            raise
+        except Exception as e:
+            print(f"[WARN] Claude brain failed ({e}), using the local brain")
 
-    try:
-        response_text = _call_llm(full_messages, turn)
-    except _Aborted:
-        raise
-    except Exception as e:
-        print(f"[WARN] Primary provider failed ({e}), trying Ollama fallback")
-        cfg = _load_config()
-        ollama_provider = cfg["llm"]["providers"].get("ollama", {"model": "qwen3:4b"})
-        response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7), full_messages, turn)
+    if response_text is None:
+        messages = context.get_messages()
+        if facts:
+            facts_block = "Relevant context from memory: " + "; ".join(facts)
+            messages = [{"role": "system", "content": facts_block}] + messages
+        messages.append({"role": "user", "content": user_text})
 
-    context.add("user", user_text)
-    context.add("assistant", response_text)
+        full_messages = [{"role": "system", "content": _system_prompt()}] + messages
+
+        try:
+            response_text = _call_llm(full_messages, turn)
+        except _Aborted:
+            raise
+        except Exception as e:
+            print(f"[WARN] Primary provider failed ({e}), trying Ollama fallback")
+            cfg = _load_config()
+            ollama_provider = cfg["llm"]["providers"].get("ollama", {"model": "qwen3:4b"})
+            response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7), full_messages, turn)
+
+        # The local brain is stateless, so it needs this history; the Claude session keeps its own.
+        context.add("user", user_text)
+        context.add("assistant", response_text)
+
     memory.extract_and_store_facts(response_text, user_text)
 
     _broadcast({"type": "response", "text": response_text})

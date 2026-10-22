@@ -21,11 +21,21 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 | Phase | What | State |
 |---|---|---|
 | 0 | Setup, voice loop on a local model | ✅ Done |
-| 1 | Claude brain + gatekeeper + non-admin account | In progress — gatekeeper + confirm dialog done |
+| 1 | Claude brain + gatekeeper + non-admin account | In progress — gatekeeper, confirm dialog, Claude brain done |
 | 2–7 | Router, usage meter, desktop control, browser, memory, extras | Planned |
 
-**Working now:** wake word → speech-to-text on the GPU → local LLM (Ollama,
-`qwen3:4b`) with 29 tools → spoken reply (Kokoro), plus the web HUD.
+**Working now:** wake word → speech-to-text on the GPU → **Claude** (via the
+Claude Agent SDK on your Claude subscription) with Jarvis's 29 tools → spoken
+reply (Kokoro), plus the web HUD. If Claude fails (not logged in, limit hit, no
+internet), that request falls back to the local brain (Ollama `qwen3:4b`).
+
+**Claude brain** (`jarvis/brain/`): one persistent Claude session. Claude gets
+only Jarvis's own tools (served in-process as `mcp__jarvis__*`), and each call
+goes through the gatekeeper. Claude Code's built-in tools (Bash, Write, Read, …),
+your Claude Code settings and other MCP servers are blocked/ignored. Before
+starting Claude, Jarvis removes `ANTHROPIC_*` (and backend-switch) variables
+from its environment so usage always goes to your subscription, not an API key.
+Token use per request is printed and sent to the HUD as a `usage` event.
 Every tool call goes through the gatekeeper (`jarvis/security/`): tiers 0–3,
 free folders = `tools.allowed_paths` (Documents, Desktop, Downloads), protected
 folders blocked, only turns you start can act, taint gate after reading the web
@@ -70,6 +80,14 @@ uv pip install --python .venv\Scripts\python.exe -r requirements.txt pip
 
 ollama pull qwen3:4b
 ```
+
+**Claude brain:** install [Claude Code](https://code.claude.com/docs), run
+`claude` once and `/login` with your **Claude subscription** account (not an
+API key). The provider is `claude` in `config.yaml` (`model: claude-opus-5-5`;
+if your plan doesn't include Opus, set `claude-sonnet-5-5`). To run fully
+local instead, set `llm.active_provider: ollama`. Edit the Claude provider in
+`config.yaml`, not in the HUD provider dialog (that dialog only knows the
+OpenAI/Ollama types).
 
 Speech models (Whisper `small`, Kokoro, the wake word) download on first run.
 CUDA libraries for Whisper come from the `nvidia-cublas-cu12` /
@@ -116,6 +134,7 @@ jarvis/
   memory.py context.py llm.py
   tools/router.py    tool list + dispatch (risky tools disabled)
   security/          gatekeeper, policy, path checks, shell parser, audit log
+  brain/             Claude Agent SDK brain + subscription env guard
 tests/               pytest
 data/                audit.db and other runtime data (git-ignored)
 PLAN.md              full build plan

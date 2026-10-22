@@ -7,9 +7,14 @@ stt:
   device: cuda
   compute_type: int8
 llm:
-  active_provider: ollama
+  active_provider: claude
   temperature: 0.7
   providers:
+    claude:
+      type: claude_agent
+      label: Claude (subscription)
+      model: claude-opus-5-5
+      max_turns: 15
     ollama:
       type: ollama
       label: Ollama (Local)
