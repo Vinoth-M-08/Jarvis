@@ -21,7 +21,7 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 | Phase | What | State |
 |---|---|---|
 | 0 | Setup, voice loop on a local model | ✅ Done |
-| 1 | Claude brain + gatekeeper + non-admin account | In progress — gatekeeper, confirm dialog, Claude brain done |
+| 1 | Claude brain + gatekeeper + non-admin account | ✅ Code done — verify on the laptop; set up the account with [docs/NON_ADMIN_ACCOUNT.md](docs/NON_ADMIN_ACCOUNT.md) |
 | 2–7 | Router, usage meter, desktop control, browser, memory, extras | Planned |
 
 **Working now:** wake word → speech-to-text on the GPU → **Claude** (via the
@@ -36,6 +36,19 @@ your Claude Code settings and other MCP servers are blocked/ignored. Before
 starting Claude, Jarvis removes `ANTHROPIC_*` (and backend-switch) variables
 from its environment so usage always goes to your subscription, not an API key.
 Token use per request is printed and sent to the HUD as a `usage` event.
+
+**Input gate** (`jarvis/input_gate.py`), before any brain runs:
+- Obviously forbidden requests (format a drive, delete Windows files, wipe the
+  PC, turn off Defender/firewall, show saved passwords, shut down the PC) are
+  refused with **0 tokens**. Narrow on purpose — anything it misses still meets
+  the gatekeeper.
+- **Daily Claude budget** (`brain.daily_claude_budget`, default 100 requests):
+  one heads-up at 80 %, and once it's used up the local brain answers for the
+  rest of the day. Counts live in `data/usage.db`.
+
+**Account check:** at startup Jarvis warns (console + voice) if it runs with
+administrator rights. Run it as a standard user —
+[docs/NON_ADMIN_ACCOUNT.md](docs/NON_ADMIN_ACCOUNT.md).
 Every tool call goes through the gatekeeper (`jarvis/security/`): tiers 0–3,
 free folders = `tools.allowed_paths` (Documents, Desktop, Downloads), protected
 folders blocked, only turns you start can act, taint gate after reading the web

@@ -21,6 +21,10 @@ llm:
       model: qwen3:4b
       base_url: http://localhost:11434
       think: false
+brain:
+  daily_claude_budget: 100
+  warn_at_percent: 80
+  usage_db: data/usage.db
 context:
   max_messages: 10
   summarize_after: 8

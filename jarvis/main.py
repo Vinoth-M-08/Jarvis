@@ -24,6 +24,9 @@ from jarvis.security.elevation import parse_command as parse_elevation_command
 from jarvis.security.policy import Tier
 from jarvis.brain.claude_agent import BrainAborted, ClaudeBrain
 from jarvis.brain.claude_env import scrub_process_env
+from jarvis.brain.usage import UsageTracker, today as usage_today
+from jarvis.input_gate import InputGate
+from jarvis.security.account import account_warning
 
 _MAX_TOOL_LOOPS = 15
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
@@ -120,6 +123,14 @@ def _get_openai_client(base_url: str, api_key: str = "lm-studio") -> OpenAI:
 context = ContextManager()
 memory = Memory()
 gatekeeper = Gatekeeper()
+
+with open(_CONFIG_PATH) as _f:
+    _brain_cfg = (yaml.safe_load(_f) or {}).get("brain") or {}
+input_gate = InputGate(
+    daily_claude_budget=int(_brain_cfg.get("daily_claude_budget", 100)),
+    warn_at_percent=int(_brain_cfg.get("warn_at_percent", 80)),
+)
+usage_tracker = UsageTracker(_brain_cfg.get("usage_db", "data/usage.db"))
 
 
 def _listen_short_answer() -> str:
@@ -385,6 +396,10 @@ def _on_claude_usage(result) -> None:
     }
     print(f"[Claude] in={event['input_tokens']} out={event['output_tokens']} "
           f"cache_read={event['cache_read_input_tokens']} turns={event['num_turns']}")
+    usage_tracker.record(event["input_tokens"], event["output_tokens"],
+                         event["cache_read_input_tokens"], event["num_turns"])
+    event["requests_today"] = usage_tracker.requests_on()
+    event["daily_budget"] = input_gate.daily_claude_budget
     _broadcast(event)
 
 
@@ -516,13 +531,25 @@ def _process_request(user_text: str, source: str = "typed") -> str:
         _broadcast({"type": "response", "text": response_text})
         return response_text
 
+    provider = _active_provider_cfg()
+    uses_claude = provider.get("type") == "claude_agent"
+    gate = input_gate.evaluate(
+        user_text, source, uses_claude,
+        claude_requests_today=usage_tracker.requests_on() if uses_claude else 0,
+        today=usage_today(),
+    )
+    if gate.refuse:
+        gatekeeper.audit.record(turn.id, turn.source, "input_gate", {"text": user_text[:200]}, 3, "deny", gate.reason)
+        response_text = gate.refusal_text()
+        _broadcast({"type": "response", "text": response_text})
+        return response_text
+
     _broadcast({"type": "status", "message": "Thinking..."})
 
     facts = memory.search_facts(user_text)
     response_text = None
 
-    provider = _active_provider_cfg()
-    if provider.get("type") == "claude_agent":
+    if uses_claude and not gate.use_local:
         try:
             response_text = _call_claude_provider(provider, user_text, facts, turn)
         except _Aborted:
@@ -553,6 +580,8 @@ def _process_request(user_text: str, source: str = "typed") -> str:
         context.add("user", user_text)
         context.add("assistant", response_text)
 
+    if gate.notice:
+        response_text = f"{response_text} {gate.notice}"
     memory.extract_and_store_facts(response_text, user_text)
 
     _broadcast({"type": "response", "text": response_text})
@@ -612,6 +641,11 @@ def main() -> None:
     threading.Thread(target=_keyboard_listener, daemon=True).start()
 
     webbrowser.open("http://localhost:7860")
+
+    warning = account_warning()
+    if warning:
+        print(f"[WARN] {warning}")
+        _speak_if_unmuted("Warning: I'm running with administrator rights.")
 
     _speak_if_unmuted("Good morning. Jarvis online.")
     listen_for_wake_word(handle_wake)
