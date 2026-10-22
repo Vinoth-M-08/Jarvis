@@ -115,3 +115,26 @@ def test_ask_propagates_errors_for_local_fallback():
     brain._ask = failing_ask
     with pytest.raises(RuntimeError, match="not logged in"):
         brain.ask("hi", "TURN")
+
+
+def test_failed_run_reports_claude_codes_reason():
+    """Claude Code puts the reason in `result` ("Failed to authenticate: ...") with is_error set."""
+    from claude_agent_sdk import ResultMessage
+
+    class FakeClient:
+        async def query(self, prompt):
+            pass
+
+        async def receive_response(self):
+            yield ResultMessage(subtype="success", duration_ms=1, duration_api_ms=0, is_error=True,
+                                num_turns=1, session_id="s",
+                                result="Failed to authenticate: OAuth session expired and could not be refreshed")
+
+    brain = ClaudeBrain(tool_schemas=[], run_tool=lambda *a: "", system_prompt=lambda: "")
+
+    async def fake_connect():
+        return FakeClient()
+    brain._connect = fake_connect
+
+    with pytest.raises(RuntimeError, match="OAuth session expired"):
+        asyncio.run(brain._ask("hi"))

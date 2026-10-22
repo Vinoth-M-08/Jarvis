@@ -138,7 +138,10 @@ class ClaudeBrain:
             if self._on_usage:
                 self._on_usage(result)
             if result.is_error:
-                raise RuntimeError(f"Claude run failed ({result.subtype}): {'; '.join(result.errors or [])}")
+                # Claude Code puts the reason in `result` (e.g. "Failed to authenticate: OAuth
+                # session expired") and often leaves `errors` empty.
+                reason = "; ".join([*(result.errors or []), *([result.result] if result.result else [])])
+                raise RuntimeError(f"Claude run failed ({result.subtype}): {reason or 'no reason given'}")
             if result.result:
                 return result.result.strip()
         return "\n".join(t for t in texts if t).strip() or "Done."
