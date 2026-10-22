@@ -46,6 +46,14 @@ desktop:
   - WaitFor
   - App
   - PowerShell
+browser:
+  enabled: true
+  channel: chrome
+  search_engine: duckduckgo
+  profile_dir: data/chrome-profile
+  max_chars: 6000
+  max_elements: 60
+  page_cache_minutes: 30
 decision:
   provider: rules
   local_for_simple: false
@@ -92,6 +100,8 @@ security:
   - get_clipboard
   - win_snapshot
   - win_waitfor
+  - browser_read
+  - browser_search
   max_denials_per_turn: 2
   audit_db: data/audit.db
   confirm_timeout_s: 30

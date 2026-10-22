@@ -26,11 +26,19 @@ ACTING_TOOLS = {
     "write_file", "type_text", "press_key", "click_at", "open_app", "open_url", "set_clipboard",
     # Windows-MCP (Phase 3)
     "win_click", "win_type", "win_move", "win_shortcut", "win_app", "win_powershell",
+    # Jarvis browser (Phase 4)
+    "browser_open", "browser_click", "browser_type",
 }
 
 # Screen control: after the screen was read (taint), one OK covers these for the rest of the task.
 UI_TOOLS = {"click_at", "type_text", "press_key", "move_mouse",
-            "win_click", "win_type", "win_move", "win_shortcut", "win_scroll"}
+            "win_click", "win_type", "win_move", "win_shortcut", "win_scroll",
+            "browser_click", "browser_type"}
+
+BROWSER_FREE_TOOLS = {"browser_search", "browser_read", "browser_scroll", "browser_back", "browser_tabs"}
+
+# Set by main.py: returns facts about the element a browser_click / browser_type targets.
+BROWSER_INSPECTOR: Callable[[str, dict], dict | None] | None = None
 
 WIN_FREE_TOOLS = {"win_snapshot", "win_click", "win_type", "win_move", "win_scroll", "win_wait", "win_waitfor"}
 
@@ -62,6 +70,8 @@ def classify(tool: str, args: dict, policy: Policy) -> tuple[Tier, str]:
         return Tier.FREE, "hotkey"
     if tool.startswith("win_"):
         return _classify_windows(tool, args, policy)
+    if tool.startswith("browser_"):
+        return _classify_browser(tool, args)
     if tool in CONFIRM_TOOLS:
         return Tier.CONFIRM, f"{tool} reads private data"
     if tool == "open_app":
@@ -97,6 +107,38 @@ def _classify_windows(tool: str, args: dict, policy: Policy) -> tuple[Tier, str]
         from jarvis.security.shell_parser import classify_powershell
         return classify_powershell(str(args.get("command", "")), policy)
     return Tier.NEVER, f"'{tool}' is not an allowed desktop tool"
+
+
+def _classify_browser(tool: str, args: dict) -> tuple[Tier, str]:
+    """Jarvis browser (Phase 4). Element facts come from the last browser_read of the page."""
+    from jarvis.tools.browser import elements as el_rules
+    from jarvis.tools.browser.session import normalize_url
+    if tool in BROWSER_FREE_TOOLS:
+        return Tier.FREE, "browsing"
+    if tool == "browser_open":
+        if normalize_url(str(args.get("url", ""))) is None:
+            return Tier.NEVER, f"'{args.get('url', '')}' is not a web address"
+        return Tier.FREE, "web address"
+    if tool not in ("browser_click", "browser_type"):
+        return Tier.NEVER, f"'{tool}' is not an allowed browser tool"
+
+    meta = BROWSER_INSPECTOR(tool, args) if BROWSER_INSPECTOR else None
+    if meta is None:
+        return Tier.CONFIRM, "the element isn't from the last browser_read of this page"
+    label = meta.get("label", "")
+    if tool == "browser_type":
+        if el_rules.is_password(meta) or el_rules.is_payment(meta):
+            return Tier.NEVER, f"'{label}' is a password, payment or one-time-code field — the owner types it"
+        if el_rules.is_search(meta):
+            return Tier.FREE, "search box"
+        if args.get("submit"):
+            return Tier.STRONG, f"types into '{label}' and submits the form"
+        return Tier.CONFIRM, f"types into the form field '{label}'"
+    if el_rules.is_risky_action(meta):
+        return Tier.STRONG, f"'{label}' submits, buys, sends, deletes or accepts something"
+    if el_rules.is_download(meta):
+        return Tier.CONFIRM, f"'{label}' downloads a file (saved to Downloads\\Jarvis)"
+    return Tier.FREE, "link or button"
 
 
 def step_key(tool: str, args: dict) -> str:

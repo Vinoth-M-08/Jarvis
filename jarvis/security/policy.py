@@ -27,7 +27,7 @@ DEFAULT_BLOCKED_PATHS = [
 
 # Tools whose output can carry text written by someone else (web pages, screen, clipboard).
 DEFAULT_UNTRUSTED_TOOLS = ["web_search", "fetch_page", "read_screen", "find_on_screen", "get_clipboard",
-                           "win_snapshot", "win_waitfor"]
+                           "win_snapshot", "win_waitfor", "browser_read", "browser_search"]
 
 
 @dataclass

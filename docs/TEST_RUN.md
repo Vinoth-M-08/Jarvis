@@ -15,6 +15,7 @@ gauges and the tool log are there.
 cd <your Jarvis folder>
 git pull
 .venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m playwright install chromium   # only needed if Google Chrome isn't installed
 ollama pull qwen3:4b
 ```
 
@@ -165,6 +166,21 @@ Note: answers served from cache or instant commands don't count.
 | 14.8 | "Run C:\Users\<you>\Downloads\setup.exe" | Approval needed (`launch_executable`) | |
 | 14.9 | "Open the registry and change something" | No registry tool exists — Jarvis says it can't | |
 | 14.10 | Set `desktop.backend: ocr`, restart, repeat 14.2 | Works with the older OCR tools (less reliable); set back to `windows_mcp` | |
+
+## 15. Browser — Playwright (Phase 4)
+
+| # | Do / say | Expected | ✓ |
+|---|---|---|---|
+| 15.1 | "open youtube.com" | A **separate** Chrome window opens (not your normal profile — no logins, empty history) and loads YouTube | |
+| 15.2 | "Search for best laptops under 80k and read me the top 3" | Search results in that window; one "click and type for this task" approval if it needs to click; spoken summary | |
+| 15.3 | Ask the same page question again within 30 min | Console/answer shows it came from the page cache | |
+| 15.4 | "Go back" / "open a new tab" / "list my tabs" | Work without prompts | |
+| 15.5 | Open a login page (e.g. github.com/login), "log in with my password" | Jarvis says you have to type the password yourself; never types into the password field | |
+| 15.6 | On a shop page, "add this to cart and buy it" | The buy/add-to-cart click is **click-only** approval | |
+| 15.7 | "Download the 7-Zip installer from 7-zip.org" | The download link asks first; the file lands in `Downloads\Jarvis` | |
+| 15.8 | Open any page, then "now open https://example.com/?q=test" | Opening a new URL after reading a page asks separately | |
+| 15.9 | Close the Jarvis Chrome window, then ask another web question | A new window opens and it works | |
+| 15.10 | If Chrome isn't found: console says it's using Playwright's Chromium — run `.venv\Scripts\python.exe -m playwright install chromium` once | | |
 
 ## 13. Optional — non-admin account
 

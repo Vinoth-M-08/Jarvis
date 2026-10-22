@@ -24,7 +24,8 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 | 1 | Claude brain + gatekeeper + non-admin account | ✅ Code done — verify on the laptop; set up the account with [docs/NON_ADMIN_ACCOUNT.md](docs/NON_ADMIN_ACCOUNT.md) |
 | 2 | Router, answer cache, brain selector + on-demand backup, gauges, notices, decision maker, plan approval | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) |
 | 3 | Desktop control via Windows-MCP, behind the gatekeeper | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §14 |
-| 4–7 | Browser, voice quality, memory, extras | Planned |
+| 4 | Browser: Jarvis's own visible Chrome via Playwright | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §15 |
+| 5–7 | Voice quality, memory, extras | Planned |
 
 **Working now:** wake word → speech-to-text on the GPU → **Claude** (via the
 Claude Agent SDK on your Claude subscription) with Jarvis's 29 tools → spoken
@@ -77,6 +78,27 @@ Scrape and the rest. Every call goes through the gatekeeper: PowerShell through
 the shell checker, `App launch_executable` and risky shortcuts need your OK, and
 after Jarvis reads the screen it asks **once per task** to click and type.
 Turn it off with `desktop.backend: ocr`.
+
+**Phase 4 — browser** (`jarvis/tools/browser/`): Jarvis opens its **own visible
+Chrome window** (Playwright, separate profile in `data/chrome-profile` — none of
+your normal logins) on the first web request. Tools: `browser_open`,
+`browser_search` (DuckDuckGo by default), `browser_read` (page text + numbered
+links/buttons/fields), `browser_click`, `browser_type`, `browser_scroll`,
+`browser_back`, `browser_tabs`. "open youtube.com" opens there too. The
+gatekeeper looks at what's being clicked or typed into:
+
+| Action | Tier |
+|---|---|
+| Open pages, search, read, scroll, back, tabs, click ordinary links/buttons, type in search boxes | Free |
+| Type into other form fields, click a download link (saved to `Downloads\Jarvis`), anything not from the last read | Ask |
+| Buttons that buy, pay, send, post, submit, delete, accept, sign in; typing + submitting a form | Click only |
+| Typing into password, card, CVV, OTP / one-time-code fields | Never — you type it |
+
+Page text is untrusted: after reading a page, Jarvis asks once per task to click
+and type, and opening another URL asks separately. Read pages are cached for 30
+minutes. Setup: `playwright install chromium` is only needed if Google Chrome
+isn't installed (`browser.channel: chrome` uses your installed Chrome binary with
+the separate profile).
 
 **Account check:** at startup Jarvis warns (console + voice) if it runs with
 administrator rights. Run it as a standard user —
