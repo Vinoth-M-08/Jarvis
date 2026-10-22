@@ -38,7 +38,7 @@
   .brand { font-weight: 700; font-size: 22px; letter-spacing: -0.5px; margin-right: 4px; }
   .pill { display: inline-flex; align-items: center; gap: 8px; padding: 7px 13px; border-radius: 999px; background: var(--tile); font-size: 13px; color: var(--dim); }
   .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--state-c, var(--c-idle)); transition: background .6s; }
-  .ask { flex: 1 1 320px; max-width: 620px; display: flex; gap: 8px; align-items: center; padding: 5px 5px 5px 16px; border-radius: 999px; background: var(--tile); }
+  .ask { flex: 1 1 220px; max-width: 620px; display: flex; gap: 8px; align-items: center; padding: 5px 5px 5px 16px; border-radius: 999px; background: var(--tile); }
   .ask input { flex: 1 1 auto; min-width: 0; min-height: 40px; border: none; background: transparent; color: var(--text); outline: none; }
   .ask input::placeholder { color: #8E8E88; }
   .btn { min-height: 40px; padding: 0 16px; border: none; border-radius: 999px; background: var(--tile-2); color: var(--text); }
@@ -47,6 +47,8 @@
   .btn.stop { background: var(--red-bg); color: var(--red); }
   .icon-btn { width: 42px; height: 42px; border: none; border-radius: 50%; background: var(--tile); color: var(--text); display: inline-flex; align-items: center; justify-content: center; }
   .icon-btn[aria-pressed="true"] { background: var(--red-bg); color: var(--red); }
+  .settings-btn { width: auto; padding: 0 16px 0 12px; gap: 8px; border-radius: 999px; }
+  .icon-btn:hover { filter: brightness(1.2); }
   select.provider { min-height: 42px; min-width: 170px; padding: 0 12px; border: none; border-radius: 999px; background: var(--tile); color: var(--text); max-width: 220px; }
   select.provider:disabled { color: var(--dim); cursor: default; }
 
@@ -156,6 +158,8 @@
 
   @media (max-width: 700px) {
     .app { padding: 14px 16px; }
+    .settings-btn { width: 42px; padding: 0; }
+    .settings-btn .btn-text { display: none; }
     .stage { width: 260px; height: 260px; }
     .caption { font-size: 24px; }
   }
@@ -180,8 +184,9 @@
     <button type="button" class="icon-btn" id="muteBtn" aria-pressed="false" aria-label="Mute Jarvis's voice">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg>
     </button>
-    <button type="button" class="icon-btn" id="settingsBtn" aria-label="Settings">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"></path></svg>
+    <button type="button" class="icon-btn settings-btn" id="settingsBtn" title="Settings" aria-label="Settings">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+      <span class="btn-text">Settings</span>
     </button>
     <button type="button" class="btn stop" id="stopBtn">Stop</button>
   </header>
