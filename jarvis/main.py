@@ -40,6 +40,7 @@ from jarvis.tools.windows_mcp import PREFIX as WIN_PREFIX, WindowsMCP
 from jarvis.tools.browser.session import BrowserSession
 from jarvis.tools.browser.tools import BROWSER_SCHEMAS
 from jarvis.security import gatekeeper as gatekeeper_rules
+from jarvis.tasks import SEARCH_TASKS_SCHEMA, TaskStore
 
 _PLAN_HINT = "[This request needs a plan: call propose_plan with every step (tool + exact args) before acting.]"
 
@@ -227,6 +228,14 @@ input_gate = InputGate(
     warn_at_percent=int(_brain_cfg.get("warn_at_percent", 80)),
 )
 usage_tracker = UsageTracker(_brain_cfg.get("usage_db", "data/usage.db"))
+_tasks_cfg = _startup_cfg.get("tasks") or {}
+# Task memory (PLAN.md Phase 6): one markdown file per task in data/tasks + a local search index.
+task_store = TaskStore(
+    root=_tasks_cfg.get("dir", "data/tasks"),
+    index_path=_tasks_cfg.get("index", "data/tasks_index"),
+    retention_days=int(_tasks_cfg.get("retention_days", 90)),
+    untrusted_tools=gatekeeper.policy.untrusted_tools,
+) if _tasks_cfg.get("enabled", True) else None
 
 
 def _listen_short_answer() -> str:
@@ -321,6 +330,9 @@ def _system_prompt(with_time: bool = True) -> str:
         "with every step (tool + exact args); the owner approves once. If it's rejected or declined, don't do it.\n\n"
         f"{_ui_workflow()}\n\n"
         + (_BROWSER_GUIDE + "\n\n" if _browser_on else "") +
+        "PAST TASKS: for questions about earlier work ('what did I do last week', 'which file did you "
+        "edit yesterday'), call search_tasks and answer with the day and the status from the record. "
+        "If nothing is found, say so — never guess.\n\n"
         "Answer in 1-3 sentences unless more is clearly needed."
         + (f" Current date and time: {_now()}." if with_time else "")
     )
@@ -612,10 +624,11 @@ _OCR_DESKTOP_TOOLS = {"read_screen", "find_on_screen", "click_at", "move_mouse",
 
 def _brain_schemas() -> list[dict]:
     browser_tools = list(BROWSER_SCHEMAS) if _browser_on else []
+    history_tools = [SEARCH_TASKS_SCHEMA] if task_store is not None else []
     if not windows_mcp.running:
-        return list(TOOL_SCHEMAS) + browser_tools
+        return list(TOOL_SCHEMAS) + browser_tools + history_tools
     base = [s for s in TOOL_SCHEMAS if s["function"]["name"] not in _OCR_DESKTOP_TOOLS]
-    return base + windows_mcp.schemas() + browser_tools
+    return base + windows_mcp.schemas() + browser_tools + history_tools
 
 
 def _tools_for(turn: TurnContext) -> list[dict]:
@@ -627,6 +640,8 @@ def _tools_for(turn: TurnContext) -> list[dict]:
 
 
 def _dispatch(name: str, args: dict) -> str:
+    if name == "search_tasks":
+        return task_store.search_tool(args) if task_store is not None else "Task history is turned off."
     if name.startswith(WIN_PREFIX):
         return windows_mcp.call(name, args)
     if name.startswith("browser_"):
@@ -716,6 +731,14 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
         return "I only change my settings when you ask me directly."
     gatekeeper.audit.record(turn.id, turn.source, "setting", {"name": name, "value": value}, 0, "allow", "settings command")
 
+    if name == "forget_task":
+        if task_store is None:
+            return "Task history is turned off."
+        n = task_store.forget_last() if value == "last" else task_store.forget_day()
+        if not n:
+            return "There was nothing to forget."
+        return "Forgot your last task." if value == "last" else f"Forgot {n} task{'s' if n != 1 else ''} from today."
+
     if name == "claude_model":
         label = CLAUDE_MODELS[value][0]
         if get_claude_model()["current"] == value and _active_provider_cfg().get("type") == "claude_agent":
@@ -771,6 +794,21 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
     return "I can't change that setting."
 
 
+def _record_task(turn: TurnContext, user_text: str, reply: str, brain: str) -> None:
+    """Save this request as a task file (background thread — never delays or breaks the reply)."""
+    if task_store is None or turn.source not in USER_SOURCES:
+        return
+
+    def _write():
+        try:
+            task_store.record(turn_id=turn.id, asked=user_text, reply=reply, source=turn.source, brain=brain,
+                              steps=gatekeeper.audit.for_turn(turn.id), stopped=turn.stopped)
+        except Exception as e:
+            print(f"[Tasks] Couldn't save the task record: {e}")
+
+    threading.Thread(target=_write, name="task-record", daemon=True).start()
+
+
 def _handle_without_brain(user_text: str, turn: TurnContext) -> str | None:
     """Router commands and cached answers — 0 tokens. None means the brain is needed."""
     if normalize_command(user_text) in _CLEAR_CACHE:
@@ -786,7 +824,8 @@ def _handle_without_brain(user_text: str, turn: TurnContext) -> str | None:
         result = _exec_tool_with_retry(turn, routed.tool, routed.args)
         _broadcast({"type": "tool_result", "name": routed.tool, "result": result[:200]})
         if result.startswith("BLOCKED"):
-            return f"I didn't do that: {turn.blocked[-1]}." if turn.blocked else "I didn't do that."
+            result = f"I didn't do that: {turn.blocked[-1]}." if turn.blocked else "I didn't do that."
+        _record_task(turn, user_text, result, "instant command")
         return result
 
     if _answer_cache_on:
@@ -874,10 +913,12 @@ def _process_request_inner(user_text: str, source: str = "typed") -> str:
     response_text = None
 
     notice = ""
+    brain_used = ""
     use_local = gate.use_local or decision.route == "local"
     if brain_selector.choose(uses_claude, use_local) == "claude":
         try:
             response_text = _call_claude_provider(provider, user_text, facts, turn)
+            brain_used = provider.get("model", "claude")
             if brain_selector.claude_ok():
                 local_backup.unload()  # Claude is back: free the GPU
         except _Aborted:
@@ -892,10 +933,12 @@ def _process_request_inner(user_text: str, source: str = "typed") -> str:
         if not ok:
             response_text = (f"Claude isn't available and {why}, so right now I can only do quick "
                              "commands like opening apps, volume and timers.")
+            brain_used = "none"
         else:
             local_backup.mark_used()
 
     if response_text is None:
+        brain_used = provider.get("model", "local") if not uses_claude else "local backup"
         messages = context.get_messages()
         if facts:
             facts_block = "Relevant context from memory: " + "; ".join(facts)
@@ -927,6 +970,7 @@ def _process_request_inner(user_text: str, source: str = "typed") -> str:
     if notice:
         response_text = f"{notice} {response_text}"
     memory.extract_and_store_facts(response_text, user_text)
+    _record_task(turn, user_text, response_text, brain_used)
 
     _broadcast({"type": "response", "text": response_text})
     return response_text
@@ -972,6 +1016,22 @@ def _handle_typed_command(text: str) -> None:
         _abort.clear()
 
 
+def _tidy_memory() -> None:
+    """Start-up housekeeping: drop secret-looking facts, old tasks, and sync the task index with the files."""
+    try:
+        removed = memory.remove_secret_facts()
+        if removed:
+            print(f"[Memory] Removed {removed} saved fact(s) that looked like passwords or numbers.")
+        if task_store is not None:
+            pruned = task_store.prune()
+            changed = task_store.reindex()
+            print(f"[Tasks] {len(list(task_store.root.rglob('*.md')))} saved tasks"
+                  + (f", {pruned} older than {task_store.retention_days} days removed" if pruned else "")
+                  + (f", {changed} re-indexed" if changed else "") + ".")
+    except Exception as e:
+        print(f"[WARN] Memory housekeeping failed: {e}")
+
+
 def main() -> None:
     import webbrowser
     from jarvis.web import start_web_background
@@ -987,6 +1047,7 @@ def main() -> None:
     webbrowser.open("http://localhost:7860")
 
     notifier.start()
+    threading.Thread(target=_tidy_memory, name="tidy-memory", daemon=True).start()
 
     if _desktop_cfg.get("backend", "windows_mcp") == "windows_mcp":
         print("[Windows-MCP] Starting (the first run downloads it, up to ~2 min)...")

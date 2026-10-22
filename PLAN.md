@@ -475,6 +475,7 @@ Jarvis/                         # our fork of PanPenek/JarvisAi
 - **Done when:** fewer cut-offs; direct command < 2 s end to end.
 
 ### Phase 6 — Memory, context & privacy firewall (≈1 week)
+- ✅ **Task memory (done early):** one markdown file per task in `data/tasks/YYYY/MM/` (YAML metadata + asked / did / result / reply), Chroma index rebuilt from the files, read-only `search_tasks` tool (untrusted), time words → date filter, "forget that task / today", 90-day retention, secret redaction, Jarvis folder always blocked for tools. Facts memory no longer stores secrets.
 - Memory: one Markdown file per fact in `data/memory/`, "remember / forget", Memory Viewer, selective retrieval (2–3 facts per request); ChromaDB only as a search index rebuilt from the files.
 - Context persisted in SQLite; merged summaries.
 - **Routine cache**: save successful Claude task steps, embedding match, first-replay confirm, fallback + update on failure, voice management ("show my routines", "forget that routine").

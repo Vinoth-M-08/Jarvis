@@ -209,6 +209,22 @@ Hard-refresh the HUD (Ctrl+F5) after `git pull`.
 | 16.9 | Settings (gear) | Drawer lists brains, Use/Edit/Delete work; Claude model dropdown shows the current model; Save settings shows "Saved" | |
 | 16.10 | Narrow the window to phone width | Tiles stack, no sideways scrolling | |
 
+## 17. Task memory (Phase 6, early)
+
+| # | Do / say | Expected | ✓ |
+|---|---|---|---|
+| 17.1 | Start Jarvis | Console: `[Tasks] N saved tasks.` | |
+| 17.2 | "Open notepad", then "what's on my Desktop?" | Two files appear in `data/tasks/<year>/<month>/`; open one — metadata at the top, then You asked / What I did / Result / Reply | |
+| 17.3 | Do a browser task (15.2) | Its file lists the site and steps, but **no page text** | |
+| 17.4 | "What did I do today?" | Jarvis lists today's tasks from the files (search_tasks in the HUD steps) | |
+| 17.5 | Change the date in one file's name and `date:` to last Thursday, restart, ask "what did I do last Thursday?" | Finds it (index follows the files) | |
+| 17.6 | "What did I send Priya last month?" (nothing like that) | "I don't have a saved task like that" — no guessing | |
+| 17.7 | Say "my wifi password is Test@123, remember that" | Not saved as a fact; the task file shows `[hidden]`, never `Test@123` | |
+| 17.8 | "forget that task" | The last file is deleted; asking about it finds nothing | |
+| 17.9 | Ask about a past task, then "do the same again" | Acting needs your OK once (history counts as untrusted) | |
+| 17.10 | Ask Jarvis to "write a file into the Jarvis folder" | Blocked — its own folder is protected | |
+| 17.11 | `pytest tests/test_tasks.py` | All pass (the facts test downloads the small embedding model once) | |
+
 ## 13. Optional — non-admin account
 
 Follow [NON_ADMIN_ACCOUNT.md](NON_ADMIN_ACCOUNT.md), then repeat 2.2 (no admin warning), 4.1 and 5.1.

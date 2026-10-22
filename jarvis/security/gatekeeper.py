@@ -48,6 +48,7 @@ FREE_TOOLS = {
     "focus_window", "get_open_windows", "type_text", "media_control", "screenshot",
     "set_clipboard", "set_volume", "get_volume", "get_system_info", "set_brightness",
     "lock_screen", "show_notification", "set_timer", "delegate_task",
+    "search_tasks",   # read-only task history (jarvis/tasks.py)
 }
 
 CONFIRM_TOOLS = {"get_clipboard"}

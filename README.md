@@ -25,7 +25,8 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 | 2 | Router, answer cache, brain selector + on-demand backup, gauges, notices, decision maker, plan approval | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) |
 | 3 | Desktop control via Windows-MCP, behind the gatekeeper | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §14 |
 | 4 | Browser: Jarvis's own visible Chrome via Playwright | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §15 |
-| 5–7 | Voice quality, memory, extras | Planned |
+| 6 (part) | **Task memory**: one markdown file per task + search ("what did I do last week?"); secrets never saved | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §17 |
+| 5–7 | Voice quality, rest of memory, extras | Planned |
 
 **Working now:** wake word → speech-to-text on the GPU → **Claude** (via the
 Claude Agent SDK on your Claude subscription) with Jarvis's 29 tools → spoken
@@ -104,6 +105,26 @@ and type, and opening another URL asks separately. Read pages are cached for 30
 minutes. Setup: `playwright install chromium` is only needed if Google Chrome
 isn't installed (`browser.channel: chrome` uses your installed Chrome binary with
 the separate profile).
+
+**Task memory** (`jarvis/tasks.py`, early Phase 6): every request you make becomes a
+readable file — `data/tasks/2026/10/2026-10-22_153012_email-my-resume-to-priya.md` —
+with metadata (date, status, files, sites, apps, tags) and what you asked, what Jarvis
+did, the result and its reply. A local index (Chroma, same small local model as the
+facts memory) finds tasks by meaning plus time words ("last week", "on Thursday",
+"3 days ago"); the brain gets a read-only `search_tasks` tool that returns only the
+2–3 matching files. Ask "what did I do with my resume last week?".
+
+- **You're in control:** open, edit or delete the files — the index follows at the next
+  start. Say "forget that task" or "forget today". Tasks older than 90 days are removed
+  (`tasks.retention_days`, 0 = keep). The security audit log (`data/audit.db`) is
+  separate and is not affected by "forget".
+- **Safe:** secrets (passwords, PINs, OTPs, card/Aadhaar/PAN numbers, API keys) are
+  replaced with `[hidden]`; text read from web pages or the screen is never copied in;
+  Jarvis's own folder is always blocked for tools, so nothing can plant fake memories;
+  `search_tasks` counts as untrusted, so acting after reading history asks you first.
+- **Facts memory fix:** "my password …" is no longer saved as a fact, anything that looks
+  like a secret is skipped, and at start-up old secret-looking facts are deleted.
+- Optional `config.yaml` keys: `tasks: {enabled: true, dir: data/tasks, index: data/tasks_index, retention_days: 90}`.
 
 **Account check:** at startup Jarvis warns (console + voice) if it runs with
 administrator rights. Run it as a standard user —

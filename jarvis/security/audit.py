@@ -48,6 +48,23 @@ class AuditLog:
             )
             self._conn.commit()
 
+    def for_turn(self, turn_id: str) -> list[dict]:
+        """Every logged call of one request, in order (for its task record)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT ts, tool, args, tier, decision, reason, result FROM audit "
+                "WHERE turn_id = ? ORDER BY id", (turn_id,),
+            ).fetchall()
+        out = []
+        for ts, tool, args, tier, decision, reason, result in rows:
+            try:
+                parsed = json.loads(args) if args else {}
+            except ValueError:
+                parsed = {}   # args are cut at 500 chars, so long ones may not parse
+            out.append({"ts": ts, "tool": tool, "args": parsed if isinstance(parsed, dict) else {},
+                        "tier": tier, "decision": decision, "reason": reason or "", "result": result or ""})
+        return out
+
     def rows(self, limit: int = 100) -> list[tuple]:
         with self._lock:
             return self._conn.execute(

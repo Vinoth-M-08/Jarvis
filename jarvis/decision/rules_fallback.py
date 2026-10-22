@@ -12,7 +12,8 @@ _INTENT_WORDS: list[tuple[str, str]] = [
     ("browser", r"\b(?:search|google|website|web|browse|youtube|url|site|look up|online|internet)\b"),
     ("app_window", r"\b(?:open|launch|close|window|windows|app|switch to|focus|minimi[sz]e|maximi[sz]e|click|type)\b"),
     ("system", r"\b(?:volume|brightness|battery|cpu|ram|memory usage|lock|timer|reminder|notification|clipboard|mute)\b"),
-    ("memory", r"\b(?:remember|forget|what do you know about me)\b"),
+    ("memory", r"\b(?:remember|forget|what do you know about me|last (?:week|month|time)|yesterday|days? ago|"
+               r"did (?:i|you|we)|when did|have (?:i|you) (?:ever|already))\b"),
     ("chat_reply", r"\b(?:reply|respond to|answer (?:this|that) message|whatsapp|draft a (?:reply|response))\b"),
 ]
 _QUESTION = re.compile(r"^(?:what|who|why|how|when|where|which|explain|define|describe|tell me|is|are|can|does|do)\b")

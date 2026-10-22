@@ -27,7 +27,7 @@ DEFAULT_BLOCKED_PATHS = [
 
 # Tools whose output can carry text written by someone else (web pages, screen, clipboard).
 DEFAULT_UNTRUSTED_TOOLS = ["web_search", "fetch_page", "read_screen", "find_on_screen", "get_clipboard",
-                           "win_snapshot", "win_waitfor", "browser_read", "browser_search"]
+                           "win_snapshot", "win_waitfor", "browser_read", "browser_search", "search_tasks"]
 
 
 @dataclass
@@ -47,10 +47,14 @@ def load_policy(cfg: dict | None = None) -> Policy:
         with open(_CONFIG_PATH) as f:
             cfg = yaml.safe_load(f) or {}
     sec = cfg.get("security") or {}
+    # Jarvis's own folder (config, audit log, task memory) is always protected — even when it
+    # sits inside a free folder like Documents, tools must not be able to rewrite its rules or memory.
+    jarvis_home = str(_CONFIG_PATH.parent)
     return Policy(
         free_paths=list((cfg.get("tools") or {}).get("allowed_paths", [])),
-        blocked_paths=list(sec.get("blocked_paths", DEFAULT_BLOCKED_PATHS)),
-        untrusted_tools=set(sec.get("untrusted_tools", DEFAULT_UNTRUSTED_TOOLS)),
+        blocked_paths=list(sec.get("blocked_paths", DEFAULT_BLOCKED_PATHS)) + [jarvis_home],
+        # search_tasks is always untrusted: old replies can echo text from web pages.
+        untrusted_tools=set(sec.get("untrusted_tools", DEFAULT_UNTRUSTED_TOOLS)) | {"search_tasks"},
         max_denials_per_turn=int(sec.get("max_denials_per_turn", 2)),
         audit_db=sec.get("audit_db", "data/audit.db"),
         confirm_timeout_s=float(sec.get("confirm_timeout_s", 30)),

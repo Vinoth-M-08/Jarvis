@@ -78,6 +78,11 @@ def test_time_and_date_answered_directly(router):
     ("set your voice speed to 1.3", "speed", 1.3),
     ("speak normally", "speed", "normal"),
     ("reset your speed", "speed", "normal"),
+    ("forget that task", "forget_task", "last"),
+    ("Jarvis, delete the last task", "forget_task", "last"),
+    ("forget what I just did", "forget_task", "last"),
+    ("forget today", "forget_task", "today"),
+    ("forget everything I did today", "forget_task", "today"),
 ])
 def test_settings_commands(router, text, setting, value):
     m = router.match(text, NOW)

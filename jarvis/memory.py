@@ -91,15 +91,28 @@ class Memory:
         return [r[0] for r in rows]
 
     def extract_and_store_facts(self, assistant_response: str, user_message: str) -> None:
-        """Store user message as a fact when it contains personal info or preferences."""
+        """Store user message as a fact when it contains personal info or preferences.
+        Never anything that looks like a password, PIN, card/ID number or key."""
+        from jarvis.security.secrets import looks_secret
         triggers = [
             "my name is", "i am", "i'm", "i work", "i like", "i hate",
             "i love", "i prefer", "i need", "i want", "i use", "i have",
             "i live", "i go to", "i study", "i play", "i own",
             "my favorite", "my email", "my phone", "my address",
-            "my birthday", "my password", "my project", "my computer",
+            "my birthday", "my project", "my computer",
             "remember that", "remember this", "don't forget", "keep in mind",
             "call me", "i usually", "i always", "i never",
         ]
+        if looks_secret(user_message):
+            return
         if any(t in user_message.lower() for t in triggers):
             self.store_fact(user_message)
+
+    def remove_secret_facts(self) -> int:
+        """Delete stored facts that look like secrets (cleans up anything saved before this check)."""
+        from jarvis.security.secrets import looks_secret
+        got = self._facts.get()
+        bad = [i for i, doc in zip(got.get("ids", []), got.get("documents", [])) if doc and looks_secret(doc)]
+        if bad:
+            self._facts.delete(ids=bad)
+        return len(bad)

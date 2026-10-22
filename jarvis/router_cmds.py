@@ -22,7 +22,7 @@ class RouterMatch:
     tool: str | None = None            # tool to run through the gatekeeper
     args: dict = field(default_factory=dict)
     reply: str | None = None           # direct answer (no tool)
-    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed
+    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed | forget_task
     value: object = None               # brain: "claude"/"local"; claude_model: "opus"/"sonnet"/"haiku";
                                        # mute: bool; speed: "faster"/"slower"/"normal"/float
 
@@ -66,6 +66,10 @@ _CLAUDE_MODEL = r"(?:claude )?(?P<cm>opus|sonnet|haiku)(?: model)?"
 def _setting_rules(r) -> list[tuple[re.Pattern, Callable]]:
     claude_model = lambda m, _: RouterMatch(setting="claude_model", value=m.group("cm"))
     return [
+        (r(r"(?:forget|delete) (?:that|the last|my last|the previous|my previous) task|forget what (?:i|we) just did"),
+         lambda m, _: RouterMatch(setting="forget_task", value="last")),
+        (r(r"forget (?:today|today's tasks|what i did today|everything (?:from|i did) today)"),
+         lambda m, _: RouterMatch(setting="forget_task", value="today")),
         (r(rf"(?:switch|change|go)(?: back)? to (?:the |your )?{_CLAUDE_MODEL}"), claude_model),
         (r(rf"use (?:the |your )?{_CLAUDE_MODEL}"), claude_model),
         (r(rf"(?:switch|change|go)(?: back)? to (?:the |your )?{_BRAIN}"), _brain),
