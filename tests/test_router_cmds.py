@@ -53,6 +53,51 @@ def test_time_and_date_answered_directly(router):
     assert router.match("what's the date today", NOW).reply == "Today is Thursday, October 22, 2026."
 
 
+@pytest.mark.parametrize("text,setting,value", [
+    ("use the local brain", "brain", "local"),
+    ("Jarvis, switch to Claude", "brain", "claude"),
+    ("go back to claude", "brain", "claude"),
+    ("switch to the backup model", "brain", "local"),
+    ("use ollama", "brain", "local"),
+    ("which brain are you using?", "which_brain", None),
+    ("what model is active", "which_brain", None),
+    ("mute yourself", "mute", True),
+    ("go silent", "mute", True),
+    ("text only mode", "mute", True),
+    ("unmute", "mute", False),
+    ("talk to me again", "mute", False),
+    ("you can speak now", "mute", False),
+    ("speak faster", "speed", "faster"),
+    ("talk slower please", "speed", "slower"),
+    ("slow down a bit", "speed", "slower"),
+    ("speed up", "speed", "faster"),
+    ("set your voice speed to 1.3", "speed", 1.3),
+    ("speak normally", "speed", "normal"),
+    ("reset your speed", "speed", "normal"),
+])
+def test_settings_commands(router, text, setting, value):
+    m = router.match(text, NOW)
+    assert m is not None and m.setting == setting and m.value == value and m.tool is None, text
+
+
+def test_settings_commands_are_not_brain_tools():
+    # Only the router changes settings; no tool exists the brain could call instead.
+    from jarvis.tools.router import TOOL_SCHEMAS
+    names = {t["function"]["name"] if "function" in t else t.get("name") for t in TOOL_SCHEMAS}
+    assert not names & {"set_active_provider", "set_provider", "toggle_mute", "set_tts_speed", "setting"}
+
+
+@pytest.mark.parametrize("text", [
+    "mute the sound",           # PC audio, not Jarvis's voice
+    "use claude to write an email",
+    "switch to chrome",
+    "go to claude.ai",
+])
+def test_settings_lookalikes_are_not_settings(router, text):
+    m = router.match(text, NOW)
+    assert m is None or m.setting is None, text
+
+
 @pytest.mark.parametrize("text", [
     "open chrome and search for laptops",
     "open the file report.pdf",

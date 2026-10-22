@@ -60,6 +60,12 @@ start.bat
 | 3.4 | "set a timer for 10 seconds" | After 10 s a toast **and** Jarvis says "Timer done…" | |
 | 3.5 | "take a screenshot" | File appears on the Desktop | |
 | 3.6 | "open youtube.com" | Browser opens YouTube | |
+| 3.7 | "use the local brain" | "Switched to Ollama (Local)."; HUD brain dropdown changes | |
+| 3.8 | "which brain are you using" | Names the local brain and `qwen3:4b` | |
+| 3.9 | "switch to Claude" | "Switched to Claude (subscription)."; dropdown changes back | |
+| 3.10 | "mute yourself", then "what time is it" | Speaker icon turns red; the time shows in the HUD but isn't spoken | |
+| 3.11 | "talk again" | "Okay, I'm talking again." is spoken | |
+| 3.12 | "speak faster" twice, then "speak normally" | Each reply says the new speed (1.25, 1.4, then 1.1); the voice changes | |
 
 ## 4. Claude brain
 

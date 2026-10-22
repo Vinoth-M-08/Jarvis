@@ -3,6 +3,9 @@
 Only whole, simple utterances match ("open notepad", "volume 40", "what time is it").
 Anything longer ("open chrome and search for ...") goes to the brain. Matched tool
 calls still run through the gatekeeper.
+
+Jarvis's own settings (brain, mute, voice speed) are router-only: no brain tool can
+change them, so a web page or file can't talk Claude into switching brains.
 """
 from __future__ import annotations
 import re
@@ -19,6 +22,8 @@ class RouterMatch:
     tool: str | None = None            # tool to run through the gatekeeper
     args: dict = field(default_factory=dict)
     reply: str | None = None           # direct answer (no tool)
+    setting: str | None = None         # Jarvis setting to change: brain | which_brain | mute | speed
+    value: object = None               # brain: "claude"/"local"; mute: bool; speed: "faster"/"slower"/"normal"/float
 
 
 def normalize(text: str) -> str:
@@ -41,10 +46,42 @@ def _timer(m, _now) -> RouterMatch:
     return RouterMatch(tool="set_timer", args={"seconds": seconds, "message": f"{n} {unit} timer done"})
 
 
+_BRAIN = r"(?P<brain>claude|local|ollama|backup|offline)(?: brain| model| ai)?"
+_BRAIN_WORDS = {"claude": "claude", "local": "local", "ollama": "local", "backup": "local", "offline": "local"}
+
+
+def _brain(m, _now) -> RouterMatch:
+    return RouterMatch(setting="brain", value=_BRAIN_WORDS[m.group("brain")])
+
+
+def _speed_step(m, _now) -> RouterMatch:
+    slower = (m.group("dir") or m.group("dir2")) in ("slower", "slow down")
+    return RouterMatch(setting="speed", value="slower" if slower else "faster")
+
+
+def _setting_rules(r) -> list[tuple[re.Pattern, Callable]]:
+    return [
+        (r(rf"(?:switch|change|go)(?: back)? to (?:the |your )?{_BRAIN}"), _brain),
+        (r(rf"use (?:the |your )?{_BRAIN}"), _brain),
+        (r(r"(?:which|what) (?:brain|model|ai)(?: are you using| are you on| is (?:active|on))?"),
+         lambda m, _: RouterMatch(setting="which_brain")),
+        (r(r"mute (?:yourself|your voice|jarvis)|(?:go )?silent(?: mode)?|text only(?: mode)?"),
+         lambda m, _: RouterMatch(setting="mute", value=True)),
+        (r(r"unmute(?: yourself| your voice| jarvis)?|(?:talk|speak) (?:to me )?again|you can (?:talk|speak) (?:again|now)|voice on"),
+         lambda m, _: RouterMatch(setting="mute", value=False)),
+        (r(r"(?:speak|talk) (?P<dir>faster|slower)|(?P<dir2>speed up|slow down)(?: your voice| a bit| a little)?"),
+         _speed_step),
+        (r(r"(?:set )?(?:your )?(?:voice |speaking |talking )?speed(?: to)? (?P<n>[0-2](?:\.\d{1,2})?)"),
+         lambda m, _: RouterMatch(setting="speed", value=float(m.group("n")))),
+        (r(r"(?:speak|talk) (?:at )?normal(?:ly| speed)?|normal (?:voice )?speed|reset (?:your )?(?:voice )?speed"),
+         lambda m, _: RouterMatch(setting="speed", value="normal")),
+    ]
+
+
 def _rules(app_names: set[str]) -> list[tuple[re.Pattern, Callable]]:
     apps = "|".join(sorted((re.escape(a) for a in app_names), key=len, reverse=True)) or "(?!)"
     r = lambda p: re.compile(rf"^(?:{p})$")
-    return [
+    return _setting_rules(r) + [
         (r(r"(?:what(?:'s| is) the time|what time is it|tell me the time|time)"), _time_reply),
         (r(r"(?:what(?:'s| is) (?:the )?(?:date|day)(?: today)?|what day is (?:it|today)|today'?s date)"), _date_reply),
         (r(rf"(?:open|launch|start|run) (?:the )?(?P<app>{apps})(?: app)?"),

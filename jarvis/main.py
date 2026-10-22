@@ -668,6 +668,58 @@ def _handle_wake_inner() -> None:
     _speak_streamed_if_unmuted(response_text)
 
 
+_SPEED_MIN, _SPEED_MAX, _SPEED_STEP, _SPEED_NORMAL = 0.7, 1.8, 0.15, 1.1
+
+
+def _apply_setting(name: str, value, turn: TurnContext) -> str:
+    """Voice/typed settings commands (brain, mute, speed) — never reachable from a brain tool."""
+    if turn.source not in USER_SOURCES:
+        return "I only change my settings when you ask me directly."
+    gatekeeper.audit.record(turn.id, turn.source, "setting", {"name": name, "value": value}, 0, "allow", "settings command")
+
+    if name == "which_brain":
+        p = _active_provider_cfg()
+        return f"I'm using {p.get('label', get_active_provider())} ({p.get('model', 'unknown model')})."
+
+    if name == "brain":
+        want = "claude_agent" if value == "claude" else "ollama"
+        key = next((k for k, p in get_providers().items() if p.get("type") == want), None)
+        if key is None:
+            return "There's no Claude brain in config.yaml." if value == "claude" else "There's no local brain set up."
+        label = get_providers()[key].get("label", key)
+        if key == get_active_provider():
+            return f"I'm already using {label}."
+        set_active_provider(key)
+        return f"Switched to {label}."
+
+    if name == "mute":
+        if bool(value) == is_muted():
+            return "I'm already muted." if value else "I'm already talking."
+        toggle_mute()
+        return ("Muted. I'll answer on screen only — say 'talk again' to unmute."
+                if value else "Okay, I'm talking again.")
+
+    if name == "speed":
+        cfg = _load_config()
+        current = float(cfg.get("tts", {}).get("speed", _SPEED_NORMAL))
+        if value == "faster":
+            new = current + _SPEED_STEP
+        elif value == "slower":
+            new = current - _SPEED_STEP
+        elif value == "normal":
+            new = _SPEED_NORMAL
+        else:
+            new = float(value)
+        new = round(min(_SPEED_MAX, max(_SPEED_MIN, new)), 2)
+        if new == current:
+            return f"My speed is already {new}." + (" That's the limit." if new in (_SPEED_MIN, _SPEED_MAX) else "")
+        cfg.setdefault("tts", {})["speed"] = new
+        _save_config(cfg)
+        return f"Voice speed set to {new}."
+
+    return "I can't change that setting."
+
+
 def _handle_without_brain(user_text: str, turn: TurnContext) -> str | None:
     """Router commands and cached answers — 0 tokens. None means the brain is needed."""
     if normalize_command(user_text) in _CLEAR_CACHE:
@@ -728,6 +780,13 @@ def _process_request_inner(user_text: str, source: str = "typed") -> str:
     elevation_cmd = parse_elevation_command(user_text)
     if elevation_cmd and source in USER_SOURCES:
         response_text = _handle_elevation_command(elevation_cmd, turn)
+        _broadcast({"type": "response", "text": response_text})
+        return response_text
+
+    # Before the input gate, so "use the local brain" still works once Claude's daily budget is spent.
+    routed = command_router.match(user_text)
+    if routed is not None and routed.setting is not None:
+        response_text = _apply_setting(routed.setting, routed.value, turn)
         _broadcast({"type": "response", "text": response_text})
         return response_text
 
