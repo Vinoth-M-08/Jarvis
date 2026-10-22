@@ -224,13 +224,13 @@
     <section class="tile color claude" aria-label="Claude usage">
       <svg width="104" height="104" viewBox="0 0 104 104" role="img" id="claudeRing" aria-label="Claude requests today">
         <circle cx="52" cy="52" r="42" fill="none" stroke="rgba(8,19,31,0.18)" stroke-width="12"></circle>
-        <circle id="claudeArc" cx="52" cy="52" r="42" fill="none" stroke="#08131F" stroke-width="12" stroke-linecap="round" stroke-dasharray="0 264" transform="rotate(-90 52 52)"></circle>
-        <text id="claudeNum" x="52" y="59" text-anchor="middle" fill="#08131F" font-family="Outfit" font-size="22" font-weight="600">0</text>
+        <circle id="claudeArc" style="opacity: 0" cx="52" cy="52" r="42" fill="none" stroke="#08131F" stroke-width="12" stroke-linecap="round" stroke-dasharray="0 264" transform="rotate(-90 52 52)"></circle>
+        <text id="claudeNum" x="52" y="59" text-anchor="middle" fill="#08131F" font-family="Outfit" font-size="22" font-weight="600">—</text>
       </svg>
       <div style="display: flex; flex-direction: column; gap: 3px">
         <h2>Claude today</h2>
-        <span class="big" id="claudeToday">0 / 100</span>
-        <span style="font-size: 13px" id="claudeWindows">5 h · 0 · 7 d · 0</span>
+        <span class="big" id="claudeToday">Connecting…</span>
+        <span style="font-size: 13px" id="claudeWindows"></span>
       </div>
     </section>
 
@@ -238,7 +238,7 @@
       <h2 id="gpuName">GPU</h2>
       <div style="font-size: 40px; font-weight: 700; letter-spacing: -1px"><span id="gpuUsed">—</span><span style="font-size: 18px; font-weight: 500" id="gpuTotal"></span></div>
       <div class="bar"><div id="gpuBar" style="width: 0%; background: #062A21"></div></div>
-      <div style="font-size: 13px" id="gpuNote">—</div>
+      <div style="font-size: 13px" id="gpuNote">Connecting…</div>
     </section>
   </div>
 
@@ -509,15 +509,34 @@ function setSys(id, on, label, warn) {
   n.className = 's' + (warn ? ' warn' : on ? ' on' : '');
   n.lastChild.textContent = label;
 }
+// Tiles show "Not connected" instead of zeros / "undefined" when Jarvis isn't reachable.
+function usageOffline(text) {
+  $('claudeNum').textContent = '—';
+  $('claudeToday').textContent = text;
+  $('claudeWindows').textContent = 'Start Jarvis to see usage';
+  $('claudeArc').setAttribute('stroke-dasharray', '0 264');
+  $('claudeArc').style.opacity = '0';   // a round cap would still draw a dot at 0
+  $('claudeRing').setAttribute('aria-label', 'Claude usage: ' + text);
+  $('gpuUsed').textContent = '—'; $('gpuTotal').textContent = ''; $('gpuBar').style.width = '0%';
+  $('gpuNote').textContent = text;
+  setSys('sysClaude', false, 'Claude · offline');
+  setSys('sysBackup', false, 'Backup');
+  setSys('sysDesktop', false, 'Desktop');
+  setSys('sysBrowser', false, 'Browser');
+}
 async function loadUsage() {
   try {
-    const d = await (await fetch('/api/usage')).json();
+    const r = await fetch('/api/usage');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (typeof d.today !== 'number' || !d.five_hour || !d.seven_day || !d.claude) throw new Error('no usage data');
     const budget = d.daily_budget || 100;
     $('claudeNum').textContent = d.today;
     $('claudeToday').textContent = `${d.today} / ${budget}`;
     $('claudeArc').setAttribute('stroke-dasharray', `${Math.min(264, 264 * d.today / budget).toFixed(1)} 264`);
+    $('claudeArc').style.opacity = d.today > 0 ? '1' : '0';
     $('claudeRing').setAttribute('aria-label', `Claude requests today: ${d.today} of ${budget}`);
-    const w = (x) => x.requests + (x.est_limit ? '/' + x.est_limit : '');
+    const w = (x) => (x.requests ?? 0) + (x.est_limit ? '/' + x.est_limit : '');
     $('claudeWindows').textContent = `5 h · ${w(d.five_hour)} · 7 d · ${w(d.seven_day)}`;
     if (d.gpu) {
       $('gpuUsed').textContent = d.gpu.vram_used_gb.toFixed(1);
@@ -532,13 +551,18 @@ async function loadUsage() {
     setSys('sysBackup', d.backup_loaded, d.backup_loaded ? 'Backup on' : 'Backup off');
     setSys('sysDesktop', d.desktop, d.desktop ? 'Desktop' : 'Desktop (OCR)');
     setSys('sysBrowser', d.browser, d.browser ? 'Browser open' : 'Browser');
-  } catch (e) {}
+  } catch (e) {
+    usageOffline('Not connected');
+  }
 }
 async function loadActivity() {
   try {
-    const d = await (await fetch('/api/activity')).json();
+    const r = await fetch('/api/activity');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
     const box = $('activity');
     box.replaceChildren();
+    if (!Array.isArray(d.items)) throw new Error('no activity data');
     if (!d.items.length) { box.append(el('div', { class: 'subline', text: 'Nothing yet' })); return; }
     for (const it of d.items.slice(0, 6)) {
       const cls = it.decision === 'allow' ? 'ok' : it.decision === 'hold' ? 'warn' : 'bad';
@@ -547,15 +571,17 @@ async function loadActivity() {
         el('span', { text: `${clock(new Date(it.ts))} · ${it.tool.replace(/_/g, ' ')}` }),
         el('span', { class: cls, text: word })));
     }
-  } catch (e) {}
+  } catch (e) {
+    $('activity').replaceChildren(el('div', { class: 'subline', text: 'Not connected' }));
+  }
 }
 
 // ─── WebSocket ───
 let ws = null;
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => { loadProviders(); $('connText').textContent = 'Online'; $('connPill').querySelector('.dot').style.background = 'var(--mint)'; };
-  ws.onclose = () => { $('connText').textContent = 'Reconnecting…'; $('connPill').querySelector('.dot').style.background = 'var(--red)'; setTimeout(connect, 2000); };
+  ws.onopen = () => { loadProviders(); loadUsage(); loadActivity(); $('connText').textContent = 'Online'; $('connPill').querySelector('.dot').style.background = 'var(--mint)'; };
+  ws.onclose = () => { usageOffline('Not connected'); $('connText').textContent = 'Reconnecting…'; $('connPill').querySelector('.dot').style.background = 'var(--red)'; setTimeout(connect, 2000); };
   ws.onmessage = (e) => {
     let msg; try { msg = JSON.parse(e.data); } catch { return; }
     switch (msg.type) {
