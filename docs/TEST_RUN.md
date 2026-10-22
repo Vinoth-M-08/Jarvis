@@ -48,7 +48,7 @@ start.bat
 |---|---|---|
 | 2.1 | "Jarvis online" spoken; HUD opens | |
 | 2.2 | **No** `[WARN] Jarvis is running with administrator rights` (if you see it, that's expected until you do docs/NON_ADMIN_ACCOUNT.md — note it) | |
-| 2.3 | HUD header shows the gauges: `CLAUDE OK · 5H · 7D · TODAY 0/100 · GPU x/8GB` | |
+| 2.3 | HUD shows the bento tiles: Claude tile `0 / 100` with 5 h · 7 d, GPU tile `x / 8 GB`, Systems dots (Claude green) | |
 
 ## 3. Instant commands — 0 tokens (no `[Claude] in=…` line should appear)
 
@@ -181,6 +181,23 @@ Note: answers served from cache or instant commands don't count.
 | 15.8 | Open any page, then "now open https://example.com/?q=test" | Opening a new URL after reading a page asks separately | |
 | 15.9 | Close the Jarvis Chrome window, then ask another web question | A new window opens and it works | |
 | 15.10 | If Chrome isn't found: console says it's using Playwright's Chromium — run `.venv\Scripts\python.exe -m playwright install chromium` once | | |
+
+## 16. HUD — bento + particle swarm
+
+Hard-refresh the HUD (Ctrl+F5) after `git pull`.
+
+| # | Do / say | Expected | ✓ |
+|---|---|---|---|
+| 16.1 | Do nothing | Grey dots drift in a loose cloud; tag says IDLE | |
+| 16.2 | "Hey Jarvis" | Dots fly into a blue ring that pulses; tag LISTENING | |
+| 16.3 | Ask something that needs tools | Purple three-cluster spin; Current task lists each step with a spinner, then a check | |
+| 16.4 | While it answers | Green wave, caption shows the reply; back to grey after it finishes | |
+| 16.5 | Trigger an approval (5.2) | Dots form an amber **?**; amber Approvals tile with countdown, Deny / Allow; the result appears in Conversation | |
+| 16.6 | "Full access for 10 minutes" | Full access tile counts down in amber; **End** stops it | |
+| 16.7 | Today tile | Shows the last actions with done / blocked / waiting | |
+| 16.8 | Systems tile | Desktop green once Windows-MCP started; Browser green after 15.1 | |
+| 16.9 | Settings (gear) | Drawer lists brains, Use/Edit/Delete work; Save settings shows "Saved" | |
+| 16.10 | Narrow the window to phone width | Tiles stack, no sideways scrolling | |
 
 ## 13. Optional — non-admin account
 

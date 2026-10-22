@@ -185,6 +185,12 @@ async def api_usage():
     return JSONResponse(usage_snapshot())
 
 
+@app.get("/api/activity")
+async def api_activity():
+    from jarvis.main import recent_activity
+    return JSONResponse({"items": recent_activity(8)})
+
+
 # ─── Mute APIs ───
 
 @app.get("/api/mute")

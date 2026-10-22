@@ -177,7 +177,15 @@ def usage_snapshot() -> dict:
         "claude": brain_selector.snapshot(),
         "backup_loaded": local_backup.loaded,
         "gpu": gpu_stats(),
+        "desktop": windows_mcp.running,
+        "browser": browser.is_open,
     }
+
+
+def recent_activity(limit: int = 8) -> list[dict]:
+    """Latest gatekeeper decisions, for the HUD's Today tile."""
+    return [{"ts": ts, "source": source, "tool": tool, "tier": tier, "decision": decision, "reason": reason}
+            for ts, _turn, source, tool, tier, decision, reason in gatekeeper.audit.rows(limit)]
 
 
 _decision_cfg = _startup_cfg.get("decision") or {}

@@ -94,6 +94,10 @@ class BrowserSession:
         self._downloads: list[str] = []
         self._lock = threading.Lock()
 
+    @property
+    def is_open(self) -> bool:
+        return self._context is not None
+
     # ─── Gatekeeper hook ───
 
     def element_meta(self, tool: str, args: dict) -> dict | None:
