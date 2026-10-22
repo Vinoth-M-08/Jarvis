@@ -84,6 +84,22 @@ def set_abort_event(event) -> None:
     global _abort_event
     _abort_event = event
 
+SPEECH_RMS = 0.015  # a 300 ms chunk this loud counts as speech
+
+
+def has_speech(audio: np.ndarray, sample_rate: int = 16000) -> bool:
+    """True if any 300 ms chunk is speech-loud. Whisper turns silence into words
+    ("You", "Thank you"), so voice input with no speech must not be transcribed."""
+    chunk = int(sample_rate * 0.3)
+    if audio.size == 0:
+        return False
+    usable = audio[: max(chunk, audio.size // chunk * chunk)]
+    if usable.size < chunk:
+        return float(np.sqrt(np.mean(usable ** 2))) >= SPEECH_RMS
+    rms = np.sqrt(np.mean(usable.reshape(-1, chunk) ** 2, axis=1))
+    return bool(rms.max() >= SPEECH_RMS)
+
+
 def record_until_silence(
     sample_rate: int = 16000,
     silence_threshold: float = 0.012,
@@ -99,7 +115,7 @@ def record_until_silence(
     silent_chunks = 0
     silent_chunks_needed = 7  # ~2.1s of silence to stop
     heard_speech = False
-    speech_threshold = 0.015  # louder than silence — confirms user is talking
+    speech_threshold = SPEECH_RMS  # louder than silence — confirms user is talking
 
     with sd.InputStream(samplerate=sample_rate, channels=1, dtype="float32") as stream:
         while True:

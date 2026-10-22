@@ -31,6 +31,22 @@ def test_result_text_flattens_content():
     assert result_text(err, "win_click") == "Tool 'win_click' failed: no element 9"
 
 
+def test_works_with_installed_mcp_models():
+    """Use the real mcp types (2.x renamed inputSchema/isError to input_schema/is_error)."""
+    from mcp import types
+    tool = types.Tool(name="Click", description="Click an element.",
+                      input_schema={"type": "object", "properties": {"label": {"type": "integer"}}})
+    client = WindowsMCP()
+    client._tools = [tool]
+    fn = client.schemas()[0]["function"]
+    assert fn["name"] == "win_click" and "label" in fn["parameters"]["properties"]
+
+    err = types.CallToolResult(content=[types.TextContent(type="text", text="no element 9")], is_error=True)
+    assert result_text(err, "win_click") == "Tool 'win_click' failed: no element 9"
+    ok = types.CallToolResult(content=[types.TextContent(type="text", text="Clicked.")], is_error=False)
+    assert result_text(ok, "win_click") == "Clicked."
+
+
 def test_dangerous_tools_are_never_requested():
     client = WindowsMCP(tools=["Click", "Registry", "FileSystem", "Process", "Snapshot"])
     requested = client.args[client.args.index("--tools") + 1].split(",")

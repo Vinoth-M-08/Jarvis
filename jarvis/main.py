@@ -1,4 +1,15 @@
 from __future__ import annotations
+import sys
+
+if __name__ == "__main__":
+    # Started as `python -m jarvis.main`: make `from jarvis.main import ...` (web.py,
+    # wake.py) return THIS module. Otherwise Python loads a second copy with its own
+    # abort flag, mute flag, HUD listeners and confirm broker — voice turns then get
+    # cancelled by a stale abort, and never show up in the HUD.
+    import jarvis as _jarvis_pkg
+    sys.modules.setdefault("jarvis.main", sys.modules[__name__])
+    _jarvis_pkg.main = sys.modules["jarvis.main"]
+
 import json
 import re
 import time
@@ -13,7 +24,7 @@ import ollama
 from openai import OpenAI
 
 from jarvis.wake import listen_for_wake_word
-from jarvis.stt import record_until_silence, transcribe_audio, set_abort_event
+from jarvis.stt import record_until_silence, transcribe_audio, set_abort_event, has_speech
 from jarvis.tts import speak, speak_streamed, is_speaking, stop_speaking
 from jarvis.context import ContextManager
 from jarvis.memory import Memory
@@ -247,7 +258,7 @@ def _listen_short_answer() -> str:
         audio = record_until_silence(max_seconds=6)
     finally:
         resume_wake_mic()
-    return transcribe_audio(audio)
+    return transcribe_audio(audio) if has_speech(audio) else ""
 
 
 confirm_broker = ConfirmBroker(
@@ -701,7 +712,7 @@ def _handle_wake_inner() -> None:
         resume_wake_mic()  # Always resume wake word detection
     _check_abort()
     print(f"[Jarvis] Recorded {len(audio)/16000:.1f}s of audio, transcribing...")
-    user_text = transcribe_audio(audio)
+    user_text = transcribe_audio(audio) if has_speech(audio) else ""
     if not user_text.strip():
         print("[Jarvis] Transcription empty — didn't catch anything.")
         _speak_if_unmuted("I didn't catch that.")

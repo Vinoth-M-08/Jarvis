@@ -31,6 +31,12 @@ def jarvis_name(mcp_name: str) -> str:
     return PREFIX + mcp_name.lower()
 
 
+def _field(obj: Any, snake: str, camel: str, default: Any = None) -> Any:
+    """Read an MCP model field: mcp 2.x uses snake_case (input_schema, is_error), 1.x camelCase."""
+    value = getattr(obj, snake, None)
+    return value if value is not None else getattr(obj, camel, default)
+
+
 def to_function_schema(name: str, description: str, input_schema: dict | None) -> dict:
     """MCP tool -> the OpenAI-style function schema both brains use."""
     schema = dict(input_schema or {"type": "object", "properties": {}})
@@ -60,7 +66,7 @@ def result_text(result: Any, name: str = "tool") -> str:
         else:
             parts.append(f"[{kind} omitted]")
     text = "\n".join(p for p in parts if p).strip() or "Done."
-    if getattr(result, "isError", False):
+    if _field(result, "is_error", "isError", False):
         return f"Tool '{name}' failed: {text}"   # same shape as router.dispatch errors (one retry)
     return text
 
@@ -128,7 +134,8 @@ class WindowsMCP:
             self._session = None
 
     def schemas(self) -> list[dict]:
-        return [to_function_schema(t.name, t.description or "", t.inputSchema) for t in self._tools]
+        return [to_function_schema(t.name, t.description or "", _field(t, "input_schema", "inputSchema"))
+                for t in self._tools]
 
     def tool_names(self) -> set[str]:
         return set(self._names)
