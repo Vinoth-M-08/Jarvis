@@ -25,6 +25,11 @@ brain:
   daily_claude_budget: 100
   warn_at_percent: 80
   usage_db: data/usage.db
+cache:
+  db: data/cache.db
+  answers:
+    enabled: true
+    ttl_days: 7
 context:
   max_messages: 10
   summarize_after: 8

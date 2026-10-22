@@ -52,6 +52,19 @@ def classify(tool: str, args: dict, policy: Policy) -> tuple[Tier, str]:
         return Tier.FREE, "hotkey"
     if tool in CONFIRM_TOOLS:
         return Tier.CONFIRM, f"{tool} reads private data"
+    if tool == "open_app":
+        from jarvis.tools.app_control import APP_MAP
+        name = str(args.get("name", "")).lower().strip()
+        if name not in APP_MAP:
+            # open_app runs unknown names as a program path — e.g. a downloaded .exe
+            return Tier.CONFIRM, f"'{args.get('name', '')}' is not a known app, it would run as a program"
+        return Tier.FREE, "known app"
+    if tool == "open_url":
+        url = str(args.get("url", "")).strip().lower()
+        if not url.startswith(("http://", "https://")):
+            # webbrowser.open on a file path or other scheme can launch programs
+            return Tier.CONFIRM, f"'{args.get('url', '')}' is not a web address"
+        return Tier.FREE, "web address"
     if tool in FREE_TOOLS:
         return Tier.FREE, "free tool"
     return Tier.NEVER, f"'{tool}' is not an allowed tool"
@@ -77,6 +90,7 @@ class TurnContext:
     source: str
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     tainted: bool = False
+    tool_calls: int = 0
     denials: int = 0
     stopped: bool = False
     blocked: list[str] = field(default_factory=list)
@@ -149,6 +163,7 @@ class Gatekeeper:
 
     def run(self, turn: TurnContext, tool: str, args: dict, dispatch: Callable[[str, dict], str]) -> str:
         """Check, then dispatch if allowed. Returns the tool result or a BLOCKED message for the model."""
+        turn.tool_calls += 1
         allowed, tier, reason = self.check(turn, tool, args)
         if not allowed:
             turn.denials += 1

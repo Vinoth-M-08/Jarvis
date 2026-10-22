@@ -27,6 +27,9 @@ from jarvis.brain.claude_env import scrub_process_env
 from jarvis.brain.usage import UsageTracker, today as usage_today
 from jarvis.input_gate import InputGate
 from jarvis.security.account import account_warning
+from jarvis.router_cmds import CommandRouter, normalize as normalize_command
+from jarvis.cache.answers import AnswerCache
+from jarvis.tools.app_control import APP_MAP
 
 _MAX_TOOL_LOOPS = 15
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
@@ -125,7 +128,15 @@ memory = Memory()
 gatekeeper = Gatekeeper()
 
 with open(_CONFIG_PATH) as _f:
-    _brain_cfg = (yaml.safe_load(_f) or {}).get("brain") or {}
+    _startup_cfg = yaml.safe_load(_f) or {}
+_brain_cfg = _startup_cfg.get("brain") or {}
+_cache_cfg = _startup_cfg.get("cache") or {}
+
+command_router = CommandRouter(set(APP_MAP))
+answer_cache = AnswerCache(_cache_cfg.get("db", "data/cache.db"),
+                           ttl_days=float((_cache_cfg.get("answers") or {}).get("ttl_days", 7)))
+_answer_cache_on = bool((_cache_cfg.get("answers") or {}).get("enabled", True))
+_CLEAR_CACHE = {"clear cache", "clear the cache", "clear your cache", "forget cached answers"}
 input_gate = InputGate(
     daily_claude_budget=int(_brain_cfg.get("daily_claude_budget", 100)),
     warn_at_percent=int(_brain_cfg.get("warn_at_percent", 80)),
@@ -514,6 +525,30 @@ def _handle_wake_inner() -> None:
     _speak_streamed_if_unmuted(response_text)
 
 
+def _handle_without_brain(user_text: str, turn: TurnContext) -> str | None:
+    """Router commands and cached answers — 0 tokens. None means the brain is needed."""
+    if normalize_command(user_text) in _CLEAR_CACHE:
+        return f"Cleared {answer_cache.clear()} cached answers."
+
+    routed = command_router.match(user_text)
+    if routed is not None:
+        if routed.reply is not None:
+            return routed.reply
+        _broadcast({"type": "tool", "name": routed.tool, "args": routed.args})
+        result = _exec_tool_with_retry(turn, routed.tool, routed.args)
+        _broadcast({"type": "tool_result", "name": routed.tool, "result": result[:200]})
+        if result.startswith("BLOCKED"):
+            return f"I didn't do that: {turn.blocked[-1]}." if turn.blocked else "I didn't do that."
+        return result
+
+    if _answer_cache_on:
+        cached = answer_cache.get(user_text)
+        if cached is not None:
+            print("[Cache] Answered from cache.")
+            return cached
+    return None
+
+
 def _process_request(user_text: str, source: str = "typed") -> str:
     """Build context, call LLM, update memory. Returns response text.
 
@@ -543,6 +578,11 @@ def _process_request(user_text: str, source: str = "typed") -> str:
         response_text = gate.refusal_text()
         _broadcast({"type": "response", "text": response_text})
         return response_text
+
+    quick = _handle_without_brain(user_text, turn)
+    if quick is not None:
+        _broadcast({"type": "response", "text": quick})
+        return quick
 
     _broadcast({"type": "status", "message": "Thinking..."})
 
@@ -580,6 +620,8 @@ def _process_request(user_text: str, source: str = "typed") -> str:
         context.add("user", user_text)
         context.add("assistant", response_text)
 
+    if _answer_cache_on and turn.tool_calls == 0 and not turn.stopped:
+        answer_cache.put(user_text, response_text)
     if gate.notice:
         response_text = f"{response_text} {gate.notice}"
     memory.extract_and_store_facts(response_text, user_text)
