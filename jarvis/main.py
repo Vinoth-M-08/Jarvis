@@ -36,6 +36,7 @@ from jarvis.notify import Notifier
 from jarvis.tools import system as system_tools
 from jarvis.decision.decide import DecisionMaker
 from jarvis.judge import Judge, PROPOSE_PLAN_SCHEMA
+from jarvis.tools.windows_mcp import PREFIX as WIN_PREFIX, WindowsMCP
 
 _PLAN_HINT = "[This request needs a plan: call propose_plan with every step (tool + exact args) before acting.]"
 
@@ -177,6 +178,13 @@ decision_maker = DecisionMaker(
 )
 _needs_plan_threshold = float(_thresholds.get("needs_plan", 0.5))
 
+_desktop_cfg = _startup_cfg.get("desktop") or {}
+windows_mcp = WindowsMCP(
+    command=str(_desktop_cfg.get("command", "uvx")),
+    tools=_desktop_cfg.get("windows_mcp_tools"),
+    start_timeout_s=float(_desktop_cfg.get("start_timeout_s", 120)),
+)
+
 command_router = CommandRouter(set(APP_MAP))
 answer_cache = AnswerCache(_cache_cfg.get("db", "data/cache.db"),
                            ttl_days=float((_cache_cfg.get("answers") or {}).get("ttl_days", 7)))
@@ -244,6 +252,33 @@ def _now() -> str:
     return datetime.now().strftime("%A, %B %d %Y, %I:%M %p")
 
 
+def _ui_workflow() -> str:
+    if windows_mcp.running:
+        return (
+            "DESKTOP CONTROL (Windows UI Automation):\n"
+            "1. win_app (mode switch / launch) — bring an app to the front or start it\n"
+            "2. win_snapshot — list the windows and UI elements with numbered labels\n"
+            "3. win_click / win_type with label=<number> — act on an element by its label\n"
+            "4. win_snapshot again to check the result; win_waitfor to wait for text or a window\n"
+            "TIPS: prefer labels over x,y; use win_shortcut for hotkeys (ctrl+t); the owner may be "
+            "asked once to allow screen control for the task; if a tool fails, try once more."
+        )
+    return (
+        "AGENTIC WORKFLOW for UI tasks:\n"
+        "1. focus_window — bring app to front\n"
+        "2. find_on_screen — locate text/buttons (returns x,y coordinates)\n"
+        "3. click_at — click the coordinates\n"
+        "4. Wait 1-2s for UI to update, then read_screen or find_on_screen to verify\n"
+        "5. Repeat until task is done. You can chain up to 15 tool calls.\n"
+        "TIPS:\n"
+        "- After clicking, always verify the result before proceeding\n"
+        "- If text not found, try scroll_screen then find_on_screen again\n"
+        "- For typing in fields: click_at the field first, then type_text\n"
+        "- Use press_key for keyboard shortcuts (ctrl+t, alt+f4, etc)\n"
+        "- If a tool fails, try once more before giving up"
+    )
+
+
 def _system_prompt(with_time: bool = True) -> str:
     """with_time=False for the persistent Claude session, which gets the time with each request instead."""
     return (
@@ -252,18 +287,7 @@ def _system_prompt(with_time: bool = True) -> str:
         f"{gatekeeper.policy_prompt()}\n\n"
         "PLANS: for a request with several steps or one that changes files, call propose_plan first "
         "with every step (tool + exact args); the owner approves once. If it's rejected or declined, don't do it.\n\n"
-        "AGENTIC WORKFLOW for UI tasks:\n"
-        "1. focus_window — bring app to front\n"
-        "2. find_on_screen — locate text/buttons (returns x,y coordinates)\n"
-        "3. click_at — click the coordinates\n"
-        "4. Wait 1-2s for UI to update, then read_screen or find_on_screen to verify\n"
-        "5. Repeat until task is done. You can chain up to 15 tool calls.\n\n"
-        "TIPS:\n"
-        "- After clicking, always verify the result before proceeding\n"
-        "- If text not found, try scroll_screen then find_on_screen again\n"
-        "- For typing in fields: click_at the field first, then type_text\n"
-        "- Use press_key for keyboard shortcuts (ctrl+t, alt+f4, etc)\n"
-        "- If a tool fails, try once more before giving up\n\n"
+        f"{_ui_workflow()}\n\n"
         "Answer in 1-3 sentences unless more is clearly needed."
         + (f" Current date and time: {_now()}." if with_time else "")
     )
@@ -479,7 +503,7 @@ def _get_claude_brain(provider_cfg: dict) -> ClaudeBrain:
     if removed:
         print(f"[Claude] Removed {', '.join(removed)} from the environment so Claude uses your subscription login.")
     _claude_brain = ClaudeBrain(
-        tool_schemas=TOOL_SCHEMAS + [PROPOSE_PLAN_SCHEMA],
+        tool_schemas=_brain_schemas() + [PROPOSE_PLAN_SCHEMA],
         run_tool=_run_tool_for_claude,
         system_prompt=lambda: _system_prompt(with_time=False),
         model=model,
@@ -508,21 +532,41 @@ def _call_claude_provider(provider_cfg: dict, user_text: str, facts: list[str], 
     return text
 
 
+# With Windows-MCP running, the brains get its win_* tools instead of the OCR / mouse ones.
+# The OCR tools stay in the router (instant commands) and as the fallback.
+_OCR_DESKTOP_TOOLS = {"read_screen", "find_on_screen", "click_at", "move_mouse", "type_text",
+                      "press_key", "focus_window", "scroll_screen", "get_open_windows"}
+
+
+def _brain_schemas() -> list[dict]:
+    if not windows_mcp.running:
+        return list(TOOL_SCHEMAS)
+    base = [s for s in TOOL_SCHEMAS if s["function"]["name"] not in _OCR_DESKTOP_TOOLS]
+    return base + windows_mcp.schemas()
+
+
 def _tools_for(turn: TurnContext) -> list[dict]:
     """Tool trimming for the local brain: only what the decision maker picked (+ propose_plan)."""
     names = turn.tool_hint
-    tools = TOOL_SCHEMAS if names is None else [s for s in TOOL_SCHEMAS if s["function"]["name"] in names]
+    schemas = _brain_schemas()
+    tools = schemas if names is None else [s for s in schemas if s["function"]["name"] in names]
     return tools + [PROPOSE_PLAN_SCHEMA]
+
+
+def _dispatch(name: str, args: dict) -> str:
+    if name.startswith(WIN_PREFIX):
+        return windows_mcp.call(name, args)
+    return dispatch(name, args)
 
 
 def _exec_tool_with_retry(turn: TurnContext, name: str, args: dict) -> str:
     """Execute a tool through the gatekeeper, retry once on failure (never on a block)."""
     if name == "propose_plan":
         return judge.propose(turn, args)
-    result = gatekeeper.run(turn, name, args, dispatch)
+    result = gatekeeper.run(turn, name, args, _dispatch)
     if result.startswith("Tool '") and "failed:" in result:
         time.sleep(0.5)
-        result = gatekeeper.run(turn, name, args, dispatch)
+        result = gatekeeper.run(turn, name, args, _dispatch)
     return result
 
 
@@ -793,6 +837,10 @@ def main() -> None:
     webbrowser.open("http://localhost:7860")
 
     notifier.start()
+
+    if _desktop_cfg.get("backend", "windows_mcp") == "windows_mcp":
+        print("[Windows-MCP] Starting (the first run downloads it, up to ~2 min)...")
+        windows_mcp.start()
 
     warning = account_warning()
     if warning:

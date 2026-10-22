@@ -22,7 +22,17 @@ from jarvis.security.policy import Policy, Tier, load_policy
 USER_SOURCES = {"voice", "typed"}
 
 # Tools that change something. Blocked on non-user turns, need OK on tainted turns.
-ACTING_TOOLS = {"write_file", "type_text", "press_key", "click_at", "open_app", "open_url", "set_clipboard"}
+ACTING_TOOLS = {
+    "write_file", "type_text", "press_key", "click_at", "open_app", "open_url", "set_clipboard",
+    # Windows-MCP (Phase 3)
+    "win_click", "win_type", "win_move", "win_shortcut", "win_app", "win_powershell",
+}
+
+# Screen control: after the screen was read (taint), one OK covers these for the rest of the task.
+UI_TOOLS = {"click_at", "type_text", "press_key", "move_mouse",
+            "win_click", "win_type", "win_move", "win_shortcut", "win_scroll"}
+
+WIN_FREE_TOOLS = {"win_snapshot", "win_click", "win_type", "win_move", "win_scroll", "win_wait", "win_waitfor"}
 
 FREE_TOOLS = {
     "web_search", "fetch_page", "get_weather", "open_url", "open_app",
@@ -45,11 +55,13 @@ def classify(tool: str, args: dict, policy: Policy) -> tuple[Tier, str]:
     """Return the tier for one tool call and a short reason."""
     if tool in _READ_PATH_TOOLS or tool in _WRITE_PATH_TOOLS:
         return _classify_path(tool, args.get("path", ""), policy)
-    if tool == "press_key":
-        keys = str(args.get("keys", "")).lower().replace(" ", "")
+    if tool in ("press_key", "win_shortcut"):
+        keys = str(args.get("keys", args.get("shortcut", ""))).lower().replace(" ", "")
         if keys in RISKY_KEYS:
             return Tier.CONFIRM, f"hotkey {keys} can close windows or open system tools"
         return Tier.FREE, "hotkey"
+    if tool.startswith("win_"):
+        return _classify_windows(tool, args, policy)
     if tool in CONFIRM_TOOLS:
         return Tier.CONFIRM, f"{tool} reads private data"
     if tool == "open_app":
@@ -68,6 +80,23 @@ def classify(tool: str, args: dict, policy: Policy) -> tuple[Tier, str]:
     if tool in FREE_TOOLS:
         return Tier.FREE, "free tool"
     return Tier.NEVER, f"'{tool}' is not an allowed tool"
+
+
+def _classify_windows(tool: str, args: dict, policy: Policy) -> tuple[Tier, str]:
+    """Windows-MCP tools (Phase 3). Unknown win_* tools are never allowed."""
+    if tool in WIN_FREE_TOOLS:
+        return Tier.FREE, "desktop control"
+    if tool == "win_app":
+        mode = str(args.get("mode", "launch"))
+        if mode == "launch_executable":
+            return Tier.CONFIRM, f"runs the program {args.get('executable', '')}"
+        if mode in ("launch", "switch", "resize"):
+            return Tier.FREE, f"app {mode}"
+        return Tier.NEVER, f"unknown App mode '{mode}'"
+    if tool == "win_powershell":
+        from jarvis.security.shell_parser import classify_powershell
+        return classify_powershell(str(args.get("command", "")), policy)
+    return Tier.NEVER, f"'{tool}' is not an allowed desktop tool"
 
 
 def step_key(tool: str, args: dict) -> str:
@@ -109,6 +138,7 @@ class TurnContext:
     needs_plan: bool = False
     plan_accepted: bool = False
     approved_steps: set[str] = field(default_factory=set)
+    ui_control_approved: bool = False   # one OK to click/type after the screen was read
     tool_hint: set[str] | None = None   # tools the local brain gets for this request (None = all)
 
     def stop_message(self) -> str:
@@ -179,6 +209,15 @@ class Gatekeeper:
         # Full access skips Tier 1 asks — but never the taint gate, which guards against injected instructions.
         if tier == Tier.CONFIRM and not tainted_confirm and self.elevation.active():
             return True, tier, f"temporary full access: {reason}"
+        if tainted_confirm and tool in UI_TOOLS:
+            # Clicking/typing after reading the screen: ask once per task, not before every click.
+            if turn.ui_control_approved:
+                return True, tier, "screen control approved for this task"
+            ui_reason = "Jarvis read the screen; let it click and type for the rest of this task"
+            if self.confirmer(ConfirmRequest(turn, tool, args, tier, ui_reason)):
+                turn.ui_control_approved = True
+                return True, tier, f"approved: {ui_reason}"
+            return False, tier, f"needs your OK: {ui_reason}"
         if self.confirmer(ConfirmRequest(turn, tool, args, tier, reason)):
             return True, tier, f"approved: {reason}"
         return False, tier, f"needs your OK: {reason}"

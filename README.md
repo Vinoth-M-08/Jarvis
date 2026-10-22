@@ -23,7 +23,8 @@ The goal (see [PLAN.md](PLAN.md)) is an agent that:
 | 0 | Setup, voice loop on a local model | ✅ Done |
 | 1 | Claude brain + gatekeeper + non-admin account | ✅ Code done — verify on the laptop; set up the account with [docs/NON_ADMIN_ACCOUNT.md](docs/NON_ADMIN_ACCOUNT.md) |
 | 2 | Router, answer cache, brain selector + on-demand backup, gauges, notices, decision maker, plan approval | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) |
-| 3–7 | Desktop control (Windows-MCP), browser, voice quality, memory, extras | Planned |
+| 3 | Desktop control via Windows-MCP, behind the gatekeeper | ✅ Code done — run [docs/TEST_RUN.md](docs/TEST_RUN.md) §14 |
+| 4–7 | Browser, voice quality, memory, extras | Planned |
 
 **Working now:** wake word → speech-to-text on the GPU → **Claude** (via the
 Claude Agent SDK on your Claude subscription) with Jarvis's 29 tools → spoken
@@ -65,6 +66,18 @@ Token use per request is printed and sent to the HUD as a `usage` event.
 - **Plans** (`jarvis/judge.py`): multi-step or file-changing requests get one plan
   card; every step is checked first, approved steps run without asking again.
 
+**Phase 3 — desktop control** (`jarvis/tools/windows_mcp.py`): at startup Jarvis
+runs [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) (`uvx windows-mcp serve`,
+needs `uv`; the first start downloads it) as an MCP client and gives both brains
+its tools as `win_*`: Snapshot (labelled UI elements), Click, Type, Scroll, Move,
+Shortcut, Wait, WaitFor, App, PowerShell. Clicking by element label is far more
+reliable than the OCR + coordinates tools, which stay as the fallback if
+Windows-MCP can't start. Never loaded: Registry, FileSystem, Process, Clipboard,
+Scrape and the rest. Every call goes through the gatekeeper: PowerShell through
+the shell checker, `App launch_executable` and risky shortcuts need your OK, and
+after Jarvis reads the screen it asks **once per task** to click and type.
+Turn it off with `desktop.backend: ocr`.
+
 **Account check:** at startup Jarvis warns (console + voice) if it runs with
 administrator rights. Run it as a standard user —
 [docs/NON_ADMIN_ACCOUNT.md](docs/NON_ADMIN_ACCOUNT.md).
@@ -91,8 +104,8 @@ full access. The HUD only accepts requests from its own page (Origin check).
 - Approvals need the HUD open: Tier 2 (overwrite, full access) is click-only, and
   with no HUD open those time out and are denied. Tier 1 can also be answered
   by saying "yes" / "no".
-- The "find text on screen, then click it" flow asks for approval at the click,
-  because screen text counts as untrusted (taint gate).
+- After Jarvis reads the screen (screen text counts as untrusted), it asks once
+  per task before clicking and typing.
 
 ---
 

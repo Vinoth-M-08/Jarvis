@@ -31,6 +31,21 @@ brain:
   min_free_vram_gb_for_backup: 4
   est_limit_5h_requests: null
   est_limit_7d_requests: null
+desktop:
+  backend: windows_mcp
+  command: uvx
+  start_timeout_s: 120
+  windows_mcp_tools:
+  - Snapshot
+  - Click
+  - Type
+  - Scroll
+  - Move
+  - Shortcut
+  - Wait
+  - WaitFor
+  - App
+  - PowerShell
 decision:
   provider: rules
   local_for_simple: false
@@ -75,6 +90,8 @@ security:
   - read_screen
   - find_on_screen
   - get_clipboard
+  - win_snapshot
+  - win_waitfor
   max_denials_per_turn: 2
   audit_db: data/audit.db
   confirm_timeout_s: 30

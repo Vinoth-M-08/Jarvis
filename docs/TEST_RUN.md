@@ -151,6 +151,21 @@ Note: answers served from cache or instant commands don't count.
 |---|---|---|
 | 12.1 | Rows for today's actions: allows, denies (5.1, 5.7), `input_gate` refusals (6.x), `propose_plan`, `full_access` | |
 
+## 14. Desktop control — Windows-MCP (Phase 3)
+
+| # | Do / say | Expected | ✓ |
+|---|---|---|---|
+| 14.1 | Start Jarvis | Console: `[Windows-MCP] Connected: win_snapshot, win_click, …` (first start may take ~2 min). If it says "Not available", note the reason — Jarvis falls back to OCR | |
+| 14.2 | "Open Notepad and type hello world" | Notepad opens; one approval "let it click and type for the rest of this task" → Allow → text typed | |
+| 14.3 | "In Notepad, select all and copy it" | Uses `win_shortcut` ctrl+a / ctrl+c without extra prompts (after the once-per-task OK) | |
+| 14.4 | "Close Notepad with Alt+F4" | Alt+F4 asks separately (risky hotkey) | |
+| 14.5 | "Snap Notepad to the left half of the screen" | Uses `win_app` resize/switch, no prompt | |
+| 14.6 | "Use PowerShell to list the files in my Documents folder" | Runs (allowlisted `Get-ChildItem` in a free folder) | |
+| 14.7 | "Use PowerShell to delete C:\Users\<you>\Documents\test.txt" | **Strong approval** (Remove-Item is not allowlisted) | |
+| 14.8 | "Run C:\Users\<you>\Downloads\setup.exe" | Approval needed (`launch_executable`) | |
+| 14.9 | "Open the registry and change something" | No registry tool exists — Jarvis says it can't | |
+| 14.10 | Set `desktop.backend: ocr`, restart, repeat 14.2 | Works with the older OCR tools (less reliable); set back to `windows_mcp` | |
+
 ## 13. Optional — non-admin account
 
 Follow [NON_ADMIN_ACCOUNT.md](NON_ADMIN_ACCOUNT.md), then repeat 2.2 (no admin warning), 4.1 and 5.1.

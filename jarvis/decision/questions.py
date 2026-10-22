@@ -12,12 +12,15 @@ INTENTS = ["file", "app_window", "system", "browser", "question", "chat_reply", 
 TOOL_SETS: dict[str, list[str]] = {
     "file": ["list_files", "read_file", "write_file", "delegate_task"],
     "app_window": ["open_app", "focus_window", "get_open_windows", "read_screen", "find_on_screen",
-                   "click_at", "type_text", "press_key", "scroll_screen", "move_mouse", "screenshot"],
+                   "click_at", "type_text", "press_key", "scroll_screen", "move_mouse", "screenshot",
+                   "win_snapshot", "win_click", "win_type", "win_scroll", "win_move", "win_shortcut",
+                   "win_wait", "win_waitfor", "win_app", "win_powershell"],
     "system": ["set_volume", "get_volume", "media_control", "get_system_info", "set_brightness",
                "lock_screen", "show_notification", "set_timer", "get_clipboard", "set_clipboard"],
     "browser": ["web_search", "fetch_page", "open_url", "get_weather"],
     "question": ["web_search", "fetch_page", "get_weather", "delegate_task"],
-    "chat_reply": ["focus_window", "read_screen", "find_on_screen", "click_at", "type_text"],
+    "chat_reply": ["focus_window", "read_screen", "find_on_screen", "click_at", "type_text",
+                   "win_app", "win_snapshot", "win_click", "win_type"],
     "memory": [],
     "other": [],  # empty = all tools
 }
