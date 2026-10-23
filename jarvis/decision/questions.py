@@ -60,6 +60,7 @@ class Decision:
     unclear: float = 0.0
     needs_plan: float = 0.0
     clarify_question: str = ""
+    multi_step: bool = False   # several actions, or work on the screen (type/click/tabs...): Claude's job in local mode
     source: str = "rules"      # "rules" | "jev"
 
     def tool_names(self) -> set[str] | None:

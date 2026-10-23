@@ -175,3 +175,13 @@ def test_empty_or_huge_plans_rejected(env):
     assert judge.propose(gk.new_turn("voice"), {"intent": "x", "steps": []}).startswith("PLAN REJECTED")
     many = [{"tool": "get_volume", "args": {}}] * 26
     assert "too many" in judge.propose(gk.new_turn("voice"), {"intent": "x", "steps": many})
+
+
+def test_multi_step_marks_work_for_claude_in_local_mode():
+    multi = lambda t: rules_fallback.decide(t).multi_step
+    for t in ["open notepad and type hello", "do me one favor, open new tab", "open spotify and play jailer 2",
+              "check my mail for anything from infosys", "click the second result"]:
+        assert multi(t), t
+    for t in ["set a timer for 2 minutes", "take a screenshot", "what's the weather in chennai",
+              "open youtube", "how are you", "what is a black hole"]:
+        assert not multi(t), t

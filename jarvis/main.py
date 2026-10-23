@@ -362,8 +362,22 @@ def _ui_workflow() -> str:
     )
 
 
-def _system_prompt(with_time: bool = True) -> str:
-    """with_time=False for the persistent Claude session, which gets the time with each request instead."""
+_SETTINGS_HELP = (
+    "SETTINGS: you can't change Jarvis's brain or model yourself — the owner does it by voice or in "
+    "the HUD settings. If asked, tell them to say: \"use the local brain\" or \"switch to Ollama\", "
+    "\"switch to Claude\", \"use Sonnet\" / \"use Opus\" / \"use Haiku\", \"fast mode on\" / \"fast mode "
+    "off\", \"mute yourself\", \"speak faster\".\n\n"
+)
+
+
+def _system_prompt(with_time: bool = True, claude: bool = False) -> str:
+    """with_time=False for the persistent Claude session, which gets the time with each request instead.
+    claude=True: Claude's version. The small local model gets a plainer action rule — told to "say
+    what you're doing first, then act", it said it and stopped without calling the tool."""
+    act_rule = ("Before using tools, first say in a few words what you're doing (\"Opening Spotify.\"), then "
+                "act, then confirm briefly." if claude else
+                "To do something, call the tool right away — don't just say you will; after it runs, "
+                "confirm in a few words.")
     return (
         "You are Jarvis, a fully agentic personal AI assistant with screen vision and desktop control. "
         "Be concise, confident, and helpful. Do what your owner asks, within the safety rules below.\n\n"
@@ -375,10 +389,10 @@ def _system_prompt(with_time: bool = True) -> str:
         "PAST TASKS: for questions about earlier work ('what did I do last week', 'which file did you "
         "edit yesterday'), call search_tasks and answer with the day and the status from the record. "
         "If nothing is found, say so — never guess.\n\n"
+        f"{_SETTINGS_HELP}"
         "VOICE: your words are spoken aloud as you write them, in a live conversation. Answer in one or "
         "two short sentences of plain speech — no lists, headings or markdown — unless the owner asks for "
-        "detail. Before using tools, first say in a few words what you're doing (\"Opening Spotify.\"), then "
-        "act, then confirm briefly. Never read out long text, links or file contents unless asked."
+        f"detail. {act_rule} Never read out long text, links or file contents unless asked."
         + (f" Current date and time: {_now()}." if with_time else "")
     )
 
@@ -676,7 +690,7 @@ def _get_claude_brain(provider_cfg: dict) -> ClaudeBrain:
     _claude_brain = ClaudeBrain(
         tool_schemas=_brain_schemas() + [PROPOSE_PLAN_SCHEMA],
         run_tool=_run_tool_for_claude,
-        system_prompt=lambda: _system_prompt(with_time=False),
+        system_prompt=lambda: _system_prompt(with_time=False, claude=True),
         model=model,
         max_turns=max_turns,
         on_tool=_on_claude_tool,
@@ -1099,6 +1113,15 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
     brain_used = ""
     brain_spoke = False   # the brain's own words went into the stream while it wrote them
     on_text = stream.feed if stream is not None else None
+    local_mode = not uses_claude
+    if local_mode and decision.multi_step:
+        # Local mode: chat and one-step actions stay on the local brain; multi-step / on-screen
+        # work goes to Claude, which does it reliably (the 4B model fumbles it).
+        claude_key = _claude_provider_key(_load_config())
+        if claude_key and usage_tracker.requests_on() < input_gate.daily_claude_budget:
+            provider = get_providers()[claude_key]
+            uses_claude = True
+            print("[Brain] Multi-step task: Claude takes this one (local mode).")
     use_local = gate.use_local or decision.route == "local"
     if use_local and not gate.use_local and uses_claude and not local_backup.ready()[0]:
         use_local = False   # fast mode, but the GPU has no room for the local brain: Claude answers
@@ -1107,7 +1130,7 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
             response_text = _call_claude_provider(provider, user_text, facts, turn, stream)
             brain_spoke = stream is not None and stream.fed_any
             brain_used = provider.get("model", "claude")
-            if brain_selector.claude_ok() and not decision_maker.local_for_simple:
+            if brain_selector.claude_ok() and not decision_maker.local_for_simple and not local_mode:
                 local_backup.unload()  # Claude is back: free the GPU (fast mode keeps the local brain ready)
         except _Aborted:
             raise

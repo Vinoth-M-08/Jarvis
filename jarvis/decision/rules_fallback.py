@@ -17,6 +17,10 @@ _INTENT_WORDS: list[tuple[str, str]] = [
     ("chat_reply", r"\b(?:reply|respond to|answer (?:this|that) message|whatsapp|draft a (?:reply|response))\b"),
 ]
 _CHAT_INTENTS = {"question"}   # (no intent at all = small talk, also chat)
+# Work that means looking at and driving the screen — the local 4B model fumbles these
+# ("open new tab" -> opened Chrome; "open Notepad and type hello" -> tried to focus it first).
+_SCREEN_WORK = re.compile(r"\b(?:type|typing|click|press|scroll|drag|select|fill|tabs?|play|playing|navigate|"
+                          r"log ?in|sign ?in|compose|reply|inbox|mail|email|message|checkout)\b")
 _QUESTION = re.compile(r"^(?:what|who|why|how|when|where|which|explain|define|describe|tell me|is|are|can|does|do)\b")
 
 _DESTRUCTIVE = re.compile(r"\b(?:delete|remove|erase|wipe|overwrite|replace|move|rename|uninstall|clear|empty|purge|kill)\b")
@@ -65,6 +69,8 @@ def decide(text: str, recent_turn: bool = False, local_for_simple: bool = False,
         d.needs_plan = 0.6
     else:
         d.needs_plan = 0.1
+
+    d.multi_step = clauses > 0 or bool(_BULK.search(t)) or bool(_SCREEN_WORK.search(t)) or d.needs_plan >= 0.5
 
     if d.unclear >= unclear_threshold:
         d.route = "ask"

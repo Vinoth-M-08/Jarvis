@@ -47,8 +47,14 @@ def _timer(m, _now) -> RouterMatch:
     return RouterMatch(tool="set_timer", args={"seconds": seconds, "message": f"{n} {unit} timer done"})
 
 
-_BRAIN = r"(?P<brain>claude|local|ollama|backup|offline)(?: brain| model| ai)?"
-_BRAIN_WORDS = {"claude": "claude", "local": "local", "ollama": "local", "backup": "local", "offline": "local"}
+# Includes how Whisper writes the names: "Olamma", "llama", "cloud" (for Claude).
+_BRAIN = r"(?P<brain>claude|cloud|local|ollama|olama|olamma|llama|backup|offline)(?: brain| model| ai| one)?"
+_BRAIN_WORDS = {"claude": "claude", "cloud": "claude", "local": "local", "ollama": "local", "olama": "local",
+                "olamma": "local", "llama": "local", "backup": "local", "offline": "local"}
+# "switch from Claude to Ollama", "change the model to local", "switch over to the Ollama model"
+_SWITCH_TO = (r"(?:(?:i want (?:you )?|i'd like (?:you )?|i need (?:you )?)?to )?"   # "(I want) to switch..."
+              r"(?:switch|change|go|move|swap)(?: back)?(?: (?:the|your) (?:brain|model|ai))?"
+              r"(?: from (?:the )?\w+(?: brain| model| ai)?)?(?: over)? to (?:the |your )?")
 
 
 def _brain(m, _now) -> RouterMatch:
@@ -72,7 +78,7 @@ def _setting_rules(r) -> list[tuple[re.Pattern, Callable]]:
          lambda m, _: RouterMatch(setting="forget_task", value="today")),
         (r(rf"(?:switch|change|go)(?: back)? to (?:the |your )?{_CLAUDE_MODEL}"), claude_model),
         (r(rf"use (?:the |your )?{_CLAUDE_MODEL}"), claude_model),
-        (r(rf"(?:switch|change|go)(?: back)? to (?:the |your )?{_BRAIN}"), _brain),
+        (r(rf"{_SWITCH_TO}{_BRAIN}"), _brain),
         (r(rf"use (?:the |your )?{_BRAIN}"), _brain),
         (r(r"(?:which|what) (?:brain|model|ai)(?: are you using| are you on| is (?:active|on))?"),
          lambda m, _: RouterMatch(setting="which_brain")),
