@@ -146,10 +146,12 @@ full access. The HUD only accepts requests from its own page (Origin check).
 
 **Known issues**
 
-- Speed (measured, Claude Sonnet): you stop talking → Jarvis starts speaking in
-  **~3.7 s** for a Claude answer and **~1.5 s** for an instant command. The biggest
-  remaining piece is Kokoro on the CPU (~0.9 s per first sentence); the console
-  prints a `[Timing]` line after every spoken reply.
+- Speed (measured; you stop talking → Jarvis starts speaking): **~3.5 s** for a
+  Claude answer, **~2.5 s** in fast mode (local brain chat), **~1.5 s** for instant
+  commands and cached answers. Most of a Claude answer is the wait for its first
+  words (~1.3 s). The voice needs CUDA PyTorch to run on the GPU (~0.3 s per
+  sentence vs ~0.9 s on the CPU) — see Setup. The console prints a `[Timing]` line
+  after every spoken reply.
 - Local brain: use the **hybrid** `qwen3:4b-q4_K_M`, not plain `qwen3:4b`. The
   plain tag is now Qwen3-4B-*Thinking*-2507, which always reasons: `think: false`
   can't turn it off, and its reasoning ends up in the spoken reply. With the
@@ -176,6 +178,8 @@ cd Jarvis
 
 uv venv --python 3.12 .venv
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt pip
+# voice on the GPU (2.6 GB; CUDA 12.8 build — same CUDA 12 family as Whisper's libraries)
+uv pip install --python .venv\Scripts\python.exe "torch==2.11.0+cu128" --index https://download.pytorch.org/whl/cu128
 .venv\Scripts\python.exe -m spacy download en_core_web_sm
 
 ollama pull qwen3:4b-q4_K_M
@@ -211,9 +215,10 @@ http://localhost:7860 (localhost only).
 
 | Input | Action |
 |---|---|
-| **"Hey Jarvis"** → chime → speak | Give a command |
-| Keep talking after the reply (soft cue, ~8 s) | Follow-up — no wake word needed |
-| **"thanks"** / **"that's all"** (or just stay quiet) | End the conversation |
+| **"Hey Jarvis"** → chime → speak | Start a conversation |
+| Keep talking after a reply (soft cue) | The conversation stays open — no wake word — until 5 min of quiet (`voice.conversation_idle_seconds`) |
+| **"thanks"** / **"that's all"** / **"stop listening"** | Close the conversation (back to "Hey Jarvis") |
+| **"fast mode on"** / **"fast mode off"** | Chat answered by the local brain (~1.5–2 s, uses ~3 GB GPU while on); tasks stay on Claude |
 | **"Hey Jarvis"** while busy, or **"stop"** | Interrupt |
 | **Esc** | Stop everything |
 | **F2** | Type a command in the console |

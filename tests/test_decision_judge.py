@@ -55,6 +55,18 @@ def test_local_for_simple_routes_easy_requests_locally():
     assert rules_fallback.decide("delete my notes.txt", local_for_simple=True).route == "claude"
 
 
+def test_fast_mode_keeps_tasks_on_claude():
+    """Fast mode is for chat: anything that needs a tool still goes to Claude."""
+    local = lambda t: rules_fallback.decide(t, local_for_simple=True).route
+    assert local("how are you doing today") == "local"
+    assert local("tell me a fun fact about octopuses") == "local"
+    assert local("open spotify") == "claude"
+    assert local("search the web for laptop prices") == "claude"
+    assert local("set the volume to 40") == "claude"
+    assert local("what did I do yesterday") == "claude"     # needs the task history tool
+    assert rules_fallback.decide("how are you", local_for_simple=False).route == "claude"
+
+
 def test_decision_maker_uses_rules_when_jev_unavailable():
     dm = DecisionMaker(provider="jev", jev=JevClient())
     assert dm.decide("open notepad").source == "rules"

@@ -22,7 +22,7 @@ class RouterMatch:
     tool: str | None = None            # tool to run through the gatekeeper
     args: dict = field(default_factory=dict)
     reply: str | None = None           # direct answer (no tool)
-    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed | forget_task
+    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed | forget_task | fast_chat
     value: object = None               # brain: "claude"/"local"; claude_model: "opus"/"sonnet"/"haiku";
                                        # mute: bool; speed: "faster"/"slower"/"normal"/float
 
@@ -76,6 +76,10 @@ def _setting_rules(r) -> list[tuple[re.Pattern, Callable]]:
         (r(rf"use (?:the |your )?{_BRAIN}"), _brain),
         (r(r"(?:which|what) (?:brain|model|ai)(?: are you using| are you on| is (?:active|on))?"),
          lambda m, _: RouterMatch(setting="which_brain")),
+        (r(r"(?:turn on |switch on |enable |start )?fast (?:mode|chat|replies|answers)(?: on)?"),
+         lambda m, _: RouterMatch(setting="fast_chat", value=True)),
+        (r(r"(?:turn off |switch off |disable |stop )fast (?:mode|chat|replies|answers)|fast (?:mode|chat|replies|answers) off"),
+         lambda m, _: RouterMatch(setting="fast_chat", value=False)),
         (r(r"mute (?:yourself|your voice|jarvis)|(?:go )?silent(?: mode)?|text only(?: mode)?"),
          lambda m, _: RouterMatch(setting="mute", value=True)),
         (r(r"unmute(?: yourself| your voice| jarvis)?|(?:talk|speak) (?:to me )?again|you can (?:talk|speak) (?:again|now)|voice on"),

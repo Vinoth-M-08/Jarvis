@@ -16,6 +16,7 @@ _INTENT_WORDS: list[tuple[str, str]] = [
                r"did (?:i|you|we)|when did|have (?:i|you) (?:ever|already))\b"),
     ("chat_reply", r"\b(?:reply|respond to|answer (?:this|that) message|whatsapp|draft a (?:reply|response))\b"),
 ]
+_CHAT_INTENTS = {"question"}   # (no intent at all = small talk, also chat)
 _QUESTION = re.compile(r"^(?:what|who|why|how|when|where|which|explain|define|describe|tell me|is|are|can|does|do)\b")
 
 _DESTRUCTIVE = re.compile(r"\b(?:delete|remove|erase|wipe|overwrite|replace|move|rename|uninstall|clear|empty|purge|kill)\b")
@@ -67,8 +68,9 @@ def decide(text: str, recent_turn: bool = False, local_for_simple: bool = False,
 
     if d.unclear >= unclear_threshold:
         d.route = "ask"
-    elif local_for_simple and d.complexity < claude_complexity and d.expected_risk < 6:
-        d.route = "local"
+    elif (local_for_simple and set(d.intents) <= _CHAT_INTENTS
+          and d.complexity < claude_complexity and d.expected_risk < 6):
+        d.route = "local"   # fast mode: plain chat / questions only — tasks with tools stay on Claude
     else:
         d.route = "claude"
     return d

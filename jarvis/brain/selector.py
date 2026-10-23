@@ -76,16 +76,21 @@ class LocalBackup:
 
     def __init__(self, model: str, keep_alive: str = "5m", min_free_vram_gb: float = 4.0,
                  free_vram_gb: Callable[[], float | None] | None = None,
-                 unload_fn: Callable[[str], None] | None = None):
+                 unload_fn: Callable[[str], None] | None = None,
+                 is_resident: Callable[[str], bool] | None = None):
         self.model = model
         self.keep_alive = keep_alive
         self.min_free_vram_gb = min_free_vram_gb
         self._free_vram_gb = free_vram_gb or (lambda: None)
         self._unload_fn = unload_fn or _ollama_unload
+        self._is_resident = is_resident or _ollama_has_loaded
         self.loaded = False
 
     def ready(self) -> tuple[bool, str]:
-        if self.loaded:
+        # Already in GPU memory (loaded earlier, maybe by another program): its own memory
+        # must not count against it.
+        if self.loaded or self._is_resident(self.model):
+            self.loaded = True
             return True, ""
         free = self._free_vram_gb()
         if free is not None and free < self.min_free_vram_gb:
@@ -103,6 +108,14 @@ class LocalBackup:
         except Exception as e:
             print(f"[Backup] Could not unload {self.model}: {e}")
         self.loaded = False
+
+
+def _ollama_has_loaded(model: str) -> bool:
+    try:
+        import ollama
+        return any(m.model == model or m.name == model for m in ollama.ps().models)
+    except Exception:
+        return False
 
 
 def _ollama_unload(model: str) -> None:

@@ -124,12 +124,14 @@ def _vad_prob_fn():
 
 def collect_utterance(frames, speech_prob, frame_s: float = VAD_FRAME / 16000,
                       end_silence_s: float = 0.7, start_timeout_s: float = 8.0, max_seconds: float = 30,
-                      threshold: float = 0.5, pre_roll_s: float = 0.3, should_stop=lambda: False) -> np.ndarray:
+                      threshold: float = 0.5, pre_roll_s: float = 0.3, should_stop=lambda: False,
+                      stats: dict | None = None) -> np.ndarray:
     """Read frames until the speaker has been quiet for end_silence_s after speaking.
 
     Returns the utterance (with pre_roll_s of lead-in), or an empty array if nobody started
     speaking within start_timeout_s. Speech starts after two speech frames in a row (60 ms),
-    so a click or a cough edge doesn't count.
+    so a click or a cough edge doesn't count. If given, `stats` gets why it stopped and the
+    loudest level / highest speech score seen (for "didn't catch anything" diagnostics).
     """
     keep_before = max(1, round(pre_roll_s / frame_s))
     end_frames = max(1, round(end_silence_s / frame_s))
@@ -138,11 +140,17 @@ def collect_utterance(frames, speech_prob, frame_s: float = VAD_FRAME / 16000,
     utterance: list[np.ndarray] = []
     speech_run = quiet_run = 0
     started = False
+    reason = "ended"
+    max_p = max_rms = 0.0
     for frame in frames:
         if should_stop():
+            reason = "stopped"
             break
         frames_seen += 1
         p = speech_prob(frame)
+        if stats is not None:
+            max_p = max(max_p, p)
+            max_rms = max(max_rms, float(np.sqrt(np.mean(frame ** 2))))
         if not started:
             recent.append(frame)
             recent = recent[-keep_before:]
@@ -151,33 +159,42 @@ def collect_utterance(frames, speech_prob, frame_s: float = VAD_FRAME / 16000,
                 started = True
                 utterance = list(recent)
             elif frames_seen * frame_s >= start_timeout_s:
-                return np.zeros(0, dtype=np.float32)
+                reason = "no speech started"
+                break
             continue
         utterance.append(frame)
         quiet_run = quiet_run + 1 if p < threshold * 0.7 else 0
-        if quiet_run >= end_frames or len(utterance) * frame_s >= max_seconds:
+        if quiet_run >= end_frames:
             break
+        if len(utterance) * frame_s >= max_seconds:
+            reason = "too long"
+            break
+    if stats is not None:
+        stats.update(reason=reason, max_speech_score=round(max_p, 2), max_level=round(max_rms, 3),
+                     seconds=round(frames_seen * frame_s, 1))
     if not started:
         return np.zeros(0, dtype=np.float32)
     return np.concatenate(utterance).astype(np.float32)
 
 
 def record_utterance(end_silence_s: float = 0.7, start_timeout_s: float = 8.0, max_seconds: float = 30,
-                     sample_rate: int = 16000) -> np.ndarray:
+                     sample_rate: int = 16000, stats: dict | None = None, ignore=None) -> np.ndarray:
     """Record one spoken request from the mic; stops ~end_silence_s after the speaker stops.
-    Empty array if nobody spoke within start_timeout_s (or Esc was pressed)."""
+    Empty array if nobody spoke within start_timeout_s (or Esc was pressed).
+    While ignore() is true (Jarvis itself is talking) the mic counts as silence."""
     import sounddevice as sd
 
     prob = _vad_prob_fn()
     stopped = lambda: bool(_abort_event and _abort_event.is_set())
+    silence = np.zeros(VAD_FRAME, dtype=np.float32)
     with sd.InputStream(samplerate=sample_rate, channels=1, dtype="float32", blocksize=VAD_FRAME) as stream:
         def frames():
             while True:
                 data, _ = stream.read(VAD_FRAME)
-                yield data.flatten()
+                yield silence if ignore is not None and ignore() else data.flatten()
         audio = collect_utterance(frames(), prob, frame_s=VAD_FRAME / sample_rate,
                                   end_silence_s=end_silence_s, start_timeout_s=start_timeout_s,
-                                  max_seconds=max_seconds, should_stop=stopped)
+                                  max_seconds=max_seconds, should_stop=stopped, stats=stats)
     if stopped():
         print("[STT] Recording aborted.")
     return audio

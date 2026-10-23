@@ -123,15 +123,17 @@ class ClaudeBrain:
                 self._turn = None
 
     def warm_up(self) -> float:
-        """Start the session and run one tiny request, so the owner's first question doesn't
-        pay the ~6 s first-request cost. Not reported as usage. Returns seconds taken."""
+        """Start the session and run two tiny requests, so the owner's first question doesn't pay
+        the first-request costs (measured: after one warm-up the next request still took 3.5 s to
+        its first word; after two, 1.3 s like every later one). Not reported as usage."""
         import time
         t = time.time()
         with self._lock:
             loop = self._ensure_loop()
-            asyncio.run_coroutine_threadsafe(
-                self._ask("(Start-up check, not from the owner. Reply with just: OK)", report_usage=False),
-                loop).result(timeout=120)
+            for _ in range(2):
+                asyncio.run_coroutine_threadsafe(
+                    self._ask("(Start-up check, not from the owner. Reply with just: OK)", report_usage=False),
+                    loop).result(timeout=120)
         return time.time() - t
 
     def close(self) -> None:

@@ -97,6 +97,6 @@ def test_speech_stream_first_piece_ends_at_a_pause():
                         "to a distant observer, someone falling in would appear to freeze.",
                         "Strange, right?"]
     s2 = _stream([])
-    s2.feed("Sure, opening it.")        # short pause point (< 24 chars): wait for the sentence
+    s2.feed("Sure, opening it.")        # pause too early (< 14 chars): wait for the sentence
     s2.finish()
     assert s2.spoken == ["Sure, opening it."]

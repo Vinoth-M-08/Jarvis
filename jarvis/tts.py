@@ -21,16 +21,28 @@ _interrupt = threading.Event()  # set to stop streaming
 _LOCAL_PTH = Path.home() / "Downloads" / "kokoro-v1_0.pth"
 
 def _get_pipeline():
+    """Kokoro runs on the GPU when PyTorch has CUDA (≈5x faster per sentence), else on the CPU."""
     global _pipeline
     if _pipeline is None:
+        import torch
         from kokoro import KPipeline, KModel
         repo_id = "hexgrad/Kokoro-82M"
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         if _LOCAL_PTH.exists():
-            kmodel = KModel(repo_id=repo_id, model=str(_LOCAL_PTH)).to("cpu").eval()
+            kmodel = KModel(repo_id=repo_id, model=str(_LOCAL_PTH)).to(device).eval()
             _pipeline = KPipeline(lang_code="a", repo_id=repo_id, model=kmodel)
         else:
-            _pipeline = KPipeline(lang_code="a", repo_id=repo_id)
+            _pipeline = KPipeline(lang_code="a", repo_id=repo_id, device=device)
+        print(f"[TTS] Kokoro voice on {device.upper()}"
+              + ("" if device == "cuda" else " (install CUDA PyTorch for faster replies)"))
     return _pipeline
+
+
+def _to_numpy(audio) -> np.ndarray:
+    """Kokoro gives torch tensors (maybe on the GPU); sounddevice needs numpy on the CPU."""
+    if hasattr(audio, "detach"):
+        audio = audio.detach().float().cpu().numpy()
+    return np.asarray(audio, dtype=np.float32)
 
 def _get_voice():
     """Load voice tensor once and cache it."""
@@ -64,7 +76,7 @@ def speak_to_bytes(text: str) -> bytes:
     audio_chunks = []
     for _, _, audio in pipeline(text, voice=voice, speed=speed):
         if audio is not None:
-            audio_chunks.append(audio)
+            audio_chunks.append(_to_numpy(audio))
     if not audio_chunks:
         return b""
     combined = np.concatenate(audio_chunks)
@@ -119,10 +131,10 @@ def speak_streamed(text: str) -> None:
 
 # A sentence ends at . ! ? (then a space) or at a line break.
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\s*\n+\s*")
-# The first piece may also end at a pause (, ; : —) once it's this long: Kokoro on the CPU
-# needs ~0.5 s + ~15 ms per character, so a short first piece starts the voice sooner.
+# The first piece may also end at a pause (, ; : —) once it's this long: the voice can start
+# as soon as a few words are ready, while the rest of the sentence is still being written.
 _CLAUSE_BREAK = re.compile(r"(?<=[,;:])\s+|\s+[—–-]\s+")
-_FIRST_PIECE_MIN_CHARS = 24
+_FIRST_PIECE_MIN_CHARS = 14
 
 
 def clean_for_speech(text: str) -> str:
@@ -143,8 +155,7 @@ def _synthesize(text: str) -> np.ndarray | None:
         return _SHORT_PHRASE_CACHE[key]
     pipeline = _get_pipeline()
     voice = _get_voice()
-    chunks = [np.asarray(audio, dtype=np.float32)
-              for _, _, audio in pipeline(text, voice=voice, speed=speed) if audio is not None]
+    chunks = [_to_numpy(audio) for _, _, audio in pipeline(text, voice=voice, speed=speed) if audio is not None]
     audio = np.concatenate(chunks) if chunks else None
     if audio is not None and len(text) <= 24 and len(_SHORT_PHRASE_CACHE) < 64:
         _SHORT_PHRASE_CACHE[key] = audio

@@ -56,7 +56,8 @@ browser:
   page_cache_minutes: 30
 decision:
   provider: rules
-  local_for_simple: false
+  local_for_simple: false      # "fast mode": chat / quick questions answered by the local brain
+                               # (~1.5-2 s), tasks still on Claude. Say "fast mode on" / "fast mode off".
   thresholds:
     unclear: 0.7
     needs_plan: 0.5
@@ -74,7 +75,8 @@ voice:
   wake_reply: chime            # chime (instant) | yes (spoken "Yes?")
   end_silence_ms: 700          # how long you pause before Jarvis treats it as the end of your sentence
   first_listen_seconds: 6      # after the wake word: give up if you don't start talking by then
-  follow_up_seconds: 8         # after a reply: keep listening this long for a follow-up (0 = off)
+  conversation_idle_seconds: 300   # after a reply the conversation stays open (no wake word) until
+                                   # it's been quiet this long, or "that's all" (0 = off)
 tts:
   voice: af_heart
   speed: 1.1

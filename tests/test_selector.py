@@ -44,7 +44,8 @@ def test_short_backoff_for_connection_errors():
 def test_local_backup_checks_vram_before_loading():
     unloaded = []
     free = [2.0]
-    backup = LocalBackup("qwen3:4b", min_free_vram_gb=4, free_vram_gb=lambda: free[0], unload_fn=unloaded.append)
+    backup = LocalBackup("qwen3:4b", min_free_vram_gb=4, free_vram_gb=lambda: free[0], unload_fn=unloaded.append,
+                         is_resident=lambda m: False)
     ok, why = backup.ready()
     assert not ok and "GPU is busy" in why
     free[0] = 6.0
@@ -59,7 +60,7 @@ def test_local_backup_checks_vram_before_loading():
 
 
 def test_local_backup_without_gpu_info_is_ready():
-    assert LocalBackup("m", free_vram_gb=lambda: None).ready() == (True, "")
+    assert LocalBackup("m", free_vram_gb=lambda: None, is_resident=lambda m: False).ready() == (True, "")
 
 
 def test_notifier_batches_routine_and_speaks_urgent():
@@ -85,3 +86,12 @@ def test_usage_windows(tmp_path):
     week = t.window(24 * 7, now=now)
     assert five == {"requests": 1, "input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 0}
     assert week["requests"] == 2 and week["input_tokens"] == 300 and week["cache_read_input_tokens"] == 50
+
+
+def test_model_already_in_gpu_memory_is_ready_even_if_little_is_free():
+    """Its own 3.3 GB must not count against it (fast mode refused with the model loaded)."""
+    backup = LocalBackup("qwen3:4b-q4_K_M", min_free_vram_gb=4, free_vram_gb=lambda: 2.8,
+                         is_resident=lambda m: m == "qwen3:4b-q4_K_M")
+    assert backup.ready() == (True, "") and backup.loaded
+    cold = LocalBackup("qwen3:4b-q4_K_M", min_free_vram_gb=4, free_vram_gb=lambda: 2.8, is_resident=lambda m: False)
+    assert cold.ready()[0] is False

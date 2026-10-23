@@ -26,6 +26,7 @@ from openai import OpenAI
 from jarvis.wake import listen_for_wake_word
 from jarvis.stt import record_utterance, transcribe_audio, set_abort_event, has_speech
 from jarvis import stt
+from jarvis.conversation import is_filler, is_goodbye, strip_wake_words
 from jarvis.tts import speak, is_speaking, stop_speaking, SpeechStream, prepare_phrases
 from jarvis.context import ContextManager
 from jarvis.memory import Memory
@@ -244,33 +245,46 @@ task_store = TaskStore(
 ) if _tasks_cfg.get("enabled", True) else None
 
 
-# Conversation feel (config.yaml voice:): chime instead of "Yes?", quick end-of-speech,
-# and a follow-up window so the next sentence doesn't need "Hey Jarvis".
+# Conversation feel (config.yaml voice:): chime instead of "Yes?", quick end-of-speech, and an
+# open conversation: after "Hey Jarvis" once, keep talking — no wake word — until it's been
+# quiet for conversation_idle_seconds or you say "that's all" / "stop listening".
 _voice_cfg = _startup_cfg.get("voice") or {}
 _WAKE_REPLY = str(_voice_cfg.get("wake_reply", "chime"))            # chime | yes
 _END_SILENCE_S = float(_voice_cfg.get("end_silence_ms", 700)) / 1000
 _FIRST_LISTEN_S = float(_voice_cfg.get("first_listen_seconds", 6))
-_FOLLOW_UP_S = float(_voice_cfg.get("follow_up_seconds", 8))         # 0 = one request per wake word
+_CONVERSATION_IDLE_S = float(_voice_cfg.get("conversation_idle_seconds",
+                                            _voice_cfg.get("follow_up_seconds", 300)))   # 0 = one request per wake word
 _last_speech_end = 0.0
 
 
-def _listen(start_timeout_s: float, max_seconds: float = 30, raise_on_abort: bool = True) -> str:
-    """Record one utterance (wake-word mic paused meanwhile) and transcribe it. '' if nobody spoke."""
+def _listen(start_timeout_s: float, max_seconds: float = 30, raise_on_abort: bool = True,
+            explain: bool = True) -> str:
+    """Record one utterance and transcribe it. '' if nobody spoke (with the reason printed if explain)."""
     from jarvis.wake import pause_wake_mic, resume_wake_mic
-    pause_wake_mic()
-    time.sleep(0.1)   # let pyaudio release the mic
+    pause_wake_mic()   # no wait needed: Windows lets the recorder open the mic alongside it
     global _last_speech_end
+    stats: dict = {}
     try:
         audio = record_utterance(end_silence_s=_END_SILENCE_S, start_timeout_s=start_timeout_s,
-                                 max_seconds=max_seconds)
+                                 max_seconds=max_seconds, stats=stats, ignore=is_speaking)
         _last_speech_end = time.time() - _END_SILENCE_S   # recording stops end_silence after the last word
     finally:
         resume_wake_mic()
     if raise_on_abort:
         _check_abort()
-    if not has_speech(audio):
+    if audio.size == 0:
+        if explain:
+            print(f"[STT] Heard nothing: {stats.get('reason')} in {stats.get('seconds')}s "
+                  f"(loudest {stats.get('max_level')}, speech score {stats.get('max_speech_score')} — needs 0.5)")
         return ""
-    return transcribe_audio(audio).strip()
+    if not has_speech(audio):
+        if explain:
+            print(f"[STT] Too quiet to transcribe (loudest {stats.get('max_level')}, needs {stt.SPEECH_RMS}).")
+        return ""
+    text = transcribe_audio(audio).strip()
+    if not text and explain:
+        print("[STT] Whisper found no words.")
+    return text
 
 
 def _listen_short_answer() -> str:
@@ -452,7 +466,7 @@ def _tone(*notes: tuple[float, float], volume: float = 0.25) -> np.ndarray:
     return np.concatenate(parts).astype(np.float32)
 
 
-_WAKE_CHIME = _tone((880, 0.06), (1320, 0.08))          # "I'm listening"
+_WAKE_CHIME = _tone((880, 0.07), (1320, 0.10), volume=0.4)   # "I'm listening" — clear enough to notice
 _FOLLOW_UP_CUE = _tone((1046, 0.05), volume=0.12)        # soft: "still listening"
 _THINKING_BEEP = _tone((600, 0.08), volume=0.18)         # "got it, working on it"
 
@@ -524,19 +538,34 @@ def _call_openai_provider(provider_cfg: dict, temperature: float, full_messages:
     return "Done."
 
 
+def _ollama_reply(kwargs: dict, on_text=None):
+    """One Ollama reply. With on_text, the words are streamed to it as they arrive."""
+    if on_text is None:
+        return ollama.chat(**kwargs).message
+    content, tool_calls = [], []
+    for chunk in ollama.chat(stream=True, **kwargs):
+        if chunk.message.content:
+            content.append(chunk.message.content)
+            on_text(chunk.message.content)
+        if chunk.message.tool_calls:
+            tool_calls.extend(chunk.message.tool_calls)
+    return ollama.Message(role="assistant", content="".join(content), tool_calls=tool_calls or None)
+
+
 def _call_ollama_provider(provider_cfg: dict, temperature: float, full_messages: list[dict],
-                          turn: TurnContext) -> str:
-    """Call Ollama provider."""
+                          turn: TurnContext, on_text=None) -> str:
+    """Call Ollama provider. on_text gets the words as they are written (to speak early)."""
     model = provider_cfg["model"]
     think = provider_cfg.get("think", False)
     tool_count = 0
     for _ in range(_MAX_TOOL_LOOPS):
         _check_abort()
-        response = ollama.chat(model=model, messages=full_messages, tools=_tools_for(turn), think=think,
-                               keep_alive=provider_cfg.get("keep_alive", _brain_cfg.get("backup_keep_alive", "5m")))
-        if response.message.tool_calls:
-            full_messages.append(response.message.model_dump())
-            for tc in response.message.tool_calls:
+        message = _ollama_reply(dict(
+            model=model, messages=full_messages, tools=_tools_for(turn), think=think,
+            keep_alive=provider_cfg.get("keep_alive", _brain_cfg.get("backup_keep_alive", "5m"))), on_text)
+        if message.tool_calls:
+            full_messages.append(message.model_dump())
+            for tc in message.tool_calls:
                 _check_abort()
                 args = _parse_tool_args(tc.function.arguments)
                 tool_count += 1
@@ -554,12 +583,12 @@ def _call_ollama_provider(provider_cfg: dict, temperature: float, full_messages:
                 if turn.stopped:
                     return turn.stop_message()
         else:
-            return _strip_think(response.message.content or "Done.")
+            return _strip_think(message.content or "Done.")
     return "Done."
 
 
-def _call_llm(full_messages: list[dict], turn: TurnContext) -> str:
-    """Route to the active provider."""
+def _call_llm(full_messages: list[dict], turn: TurnContext, on_text=None) -> str:
+    """Route to the active provider. on_text gets the reply's words (streamed for Ollama)."""
     cfg = _load_config()
     llm_cfg = cfg["llm"]
     temperature = llm_cfg.get("temperature", 0.7)
@@ -574,9 +603,11 @@ def _call_llm(full_messages: list[dict], turn: TurnContext) -> str:
         ptype = "ollama"
 
     if ptype == "openai":
-        return _call_openai_provider(provider, temperature, full_messages, turn)
-    else:
-        return _call_ollama_provider(provider, temperature, full_messages, turn)
+        text = _call_openai_provider(provider, temperature, full_messages, turn)
+        if on_text is not None:
+            on_text(text)   # not streamed: hand over the whole reply
+        return text
+    return _call_ollama_provider(provider, temperature, full_messages, turn, on_text)
 
 
 # ─── Claude brain (Claude Agent SDK on your subscription) ───
@@ -711,8 +742,12 @@ def _brain_schemas() -> list[dict]:
 
 
 def _tools_for(turn: TurnContext) -> list[dict]:
-    """Tool trimming for the local brain: only what the decision maker picked (+ propose_plan)."""
+    """Tool trimming for the local brain: only what the decision maker picked (+ propose_plan).
+    An empty hint means plain chat: no tools at all (39 tool descriptions are ~2,300 tokens the
+    small model re-reads every time: 1.5 s before its first word instead of 0.3 s)."""
     names = turn.tool_hint
+    if names is not None and not names:
+        return []
     schemas = _brain_schemas()
     tools = schemas if names is None else [s for s in schemas if s["function"]["name"] in names]
     return tools + [PROPOSE_PLAN_SCHEMA]
@@ -760,19 +795,9 @@ def handle_wake() -> None:
         print("[Jarvis] Listening for wake word...")
 
 
-_GOODBYES = {"thanks", "thank you", "thanks jarvis", "thank you jarvis", "that's all", "that's it",
-             "that is all", "no", "nope", "no thanks", "no thank you", "nothing", "nothing else",
-             "goodbye", "bye", "bye jarvis", "all good", "i'm good", "we're done", "done"}
-
-
-def _is_goodbye(text: str) -> bool:
-    """Ends a conversation (only checked for follow-ups, not the first request)."""
-    return re.sub(r"[^\w' ]", "", text.lower()).strip() in _GOODBYES
-
-
 def _handle_wake_inner() -> None:
-    """One conversation: the request after the wake word, then follow-ups without the wake word
-    until nobody speaks for follow_up_seconds, a goodbye, or Esc / "stop"."""
+    """One conversation: the request after the wake word, then more without the wake word until it's
+    been quiet for conversation_idle_seconds, a goodbye ("that's all"), or Esc / "stop"."""
     if is_speaking():
         stop_speaking()
     print("[Jarvis] Wake word detected!")
@@ -782,28 +807,39 @@ def _handle_wake_inner() -> None:
     else:
         _play_sound(_WAKE_CHIME)
 
-    follow_up = False
+    conversation = False   # True once the first reply is done: no wake word needed
     while True:
         _broadcast({"type": "status", "message": "Listening..."})
-        print("[Jarvis] Listening" + (" for a follow-up..." if follow_up else "..."))
+        if not conversation:
+            print("[Jarvis] Listening...")
         t0 = time.time()
-        user_text = _listen(start_timeout_s=_FOLLOW_UP_S if follow_up else _FIRST_LISTEN_S)
+        user_text = _listen(start_timeout_s=_CONVERSATION_IDLE_S if conversation else _FIRST_LISTEN_S,
+                            explain=not conversation)
+        speech_end = _last_speech_end   # this request's own (a yes/no question mid-task would overwrite it)
         if not user_text:
-            if follow_up:
-                print("[Jarvis] Conversation over (no follow-up).")
+            if conversation:
+                print(f"[Jarvis] Conversation closed after {_CONVERSATION_IDLE_S / 60:.0f} min of quiet. "
+                      "Say 'Hey Jarvis' to start again.")
             else:
                 print("[Jarvis] Didn't catch anything.")
                 _speak_if_unmuted("I didn't catch that.")
             return
+        user_text = strip_wake_words(user_text)
+        if not user_text:                      # just "Hey Jarvis" again: I'm here, keep listening
+            _play_sound(_WAKE_CHIME)
+            continue
+        if conversation and is_filler(user_text):
+            print(f"[Jarvis] (ignored {user_text!r})")
+            continue
         print(f"[You] {user_text}   ({time.time() - t0:.1f}s incl. transcription)")
 
         if _is_stop_command(user_text):
             abort_all()
             print("[Jarvis] Stopped. (voice)")
             raise _Aborted()
-        if follow_up and _is_goodbye(user_text):
+        if conversation and is_goodbye(user_text):
             _speak_if_unmuted("Okay.")
-            print("[Jarvis] Conversation over.")
+            print("[Jarvis] Conversation closed. Say 'Hey Jarvis' to start again.")
             return
 
         t1 = time.time()
@@ -817,13 +853,16 @@ def _handle_wake_inner() -> None:
                 stream.finish()   # returns at once if Esc / "Hey Jarvis" stopped it
         if stream is not None and stream.first_audio_at:
             print(f"[Timing] You stopped talking -> Jarvis started speaking: "
-                  f"{stream.first_audio_at - _last_speech_end:.1f}s")
+                  f"{stream.first_audio_at - speech_end:.1f}s")
         _check_abort()
 
-        if _FOLLOW_UP_S <= 0:
+        if _CONVERSATION_IDLE_S <= 0:
             return
-        follow_up = True
-        _play_sound(_FOLLOW_UP_CUE)
+        if not conversation:
+            print(f"[Jarvis] Conversation open — just keep talking (closes after "
+                  f"{_CONVERSATION_IDLE_S / 60:.0f} min of quiet or 'that's all').")
+        conversation = True
+        _play_sound(_FOLLOW_UP_CUE, wait=False)   # starts as listening starts: no gap to cut your words
 
 
 _SPEED_MIN, _SPEED_MAX, _SPEED_STEP, _SPEED_NORMAL = 0.7, 1.8, 0.15, 1.1
@@ -855,6 +894,19 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
             set_active_provider(key)
         _warm_up_claude()
         return f"Switched to Claude {label}." if switched else f"Okay, Claude {label} from now on."
+
+    if name == "fast_chat":
+        if bool(value) == decision_maker.local_for_simple:
+            return "Fast mode is already on." if value else "Fast mode is already off."
+        decision_maker.local_for_simple = bool(value)
+        cfg = _load_config()
+        cfg.setdefault("decision", {})["local_for_simple"] = bool(value)
+        _save_config(cfg)
+        if value:
+            return ("Fast mode on: I'll answer chat and quick questions with the local brain, "
+                    "and use Claude for tasks.")
+        local_backup.unload()
+        return "Fast mode off: Claude answers everything again."
 
     if name == "which_brain":
         p = _active_provider_cfg()
@@ -1021,7 +1073,8 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
         _broadcast({"type": "response", "text": decision.clarify_question})
         return decision.clarify_question
     turn.needs_plan = decision.needs_plan >= _needs_plan_threshold
-    turn.tool_hint = decision.tool_names()
+    # Fast mode sends only plain chat to the local brain, and chat needs no tools.
+    turn.tool_hint = set() if decision.route == "local" else decision.tool_names()
 
     _broadcast({"type": "status", "message": "Thinking..."})
 
@@ -1030,15 +1083,18 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
 
     notice = ""
     brain_used = ""
-    claude_streamed = False
+    brain_spoke = False   # the brain's own words went into the stream while it wrote them
+    on_text = stream.feed if stream is not None else None
     use_local = gate.use_local or decision.route == "local"
+    if use_local and not gate.use_local and uses_claude and not local_backup.ready()[0]:
+        use_local = False   # fast mode, but the GPU has no room for the local brain: Claude answers
     if brain_selector.choose(uses_claude, use_local) == "claude":
         try:
             response_text = _call_claude_provider(provider, user_text, facts, turn, stream)
-            claude_streamed = stream is not None and stream.fed_any
+            brain_spoke = stream is not None and stream.fed_any
             brain_used = provider.get("model", "claude")
-            if brain_selector.claude_ok():
-                local_backup.unload()  # Claude is back: free the GPU
+            if brain_selector.claude_ok() and not decision_maker.local_for_simple:
+                local_backup.unload()  # Claude is back: free the GPU (fast mode keeps the local brain ready)
         except _Aborted:
             raise
         except Exception as e:
@@ -1067,15 +1123,19 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
 
         full_messages = [{"role": "system", "content": _system_prompt()}] + messages
 
+        if notice and stream is not None:
+            stream.feed(notice + " ")   # say why first ("Claude isn't reachable…"), then the answer
         try:
-            response_text = _call_llm(full_messages, turn)
+            response_text = _call_llm(full_messages, turn, on_text)
         except _Aborted:
             raise
         except Exception as e:
             print(f"[WARN] Primary provider failed ({e}), trying Ollama fallback")
             cfg = _load_config()
             ollama_provider = cfg["llm"]["providers"].get("ollama", {"model": "qwen3:4b-q4_K_M"})
-            response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7), full_messages, turn)
+            response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7),
+                                                  full_messages, turn, on_text)
+        brain_spoke = stream is not None
 
         # The local brain is stateless, so it needs this history; the Claude session keeps its own.
         context.add("user", user_text)
@@ -1088,11 +1148,11 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
     if notice:
         response_text = f"{notice} {response_text}"
     if stream is not None and stream.fed_any:
-        if claude_streamed:
+        if brain_spoke:
             if gate.notice:
-                stream.feed(" " + gate.notice)   # Claude's own words were already spoken
+                stream.feed(" " + gate.notice)   # the brain's own words were already spoken
         else:
-            stream.feed(" " + response_text)     # Claude spoke part of a reply, then failed
+            stream.feed(" " + response_text)     # e.g. Claude spoke part of a reply, then failed
     memory.extract_and_store_facts(response_text, user_text)
     _record_task(turn, user_text, response_text, brain_used)
 
