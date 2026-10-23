@@ -4,6 +4,12 @@ import threading
 import time
 import numpy as np
 import yaml
+# Imported here (main thread, at start-up), not inside the functions: the speech-to-text
+# preload thread imports openwakeword.vad at the same time, and two threads importing the
+# package at once can hand one of them a half-loaded module
+# ("module 'openwakeword' has no attribute 'get_pretrained_model_paths'").
+import openwakeword.model  # noqa: F401
+import openwakeword.vad  # noqa: F401
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 
