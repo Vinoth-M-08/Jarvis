@@ -994,6 +994,20 @@ def _handle_without_brain(user_text: str, turn: TurnContext) -> str | None:
     return None
 
 
+def _local_brain_down(error: Exception, user_text: str, facts: list[str], turn: TurnContext,
+                      stream: SpeechStream | None, use_claude: bool) -> str:
+    """The local brain can't be reached (usually: Ollama isn't running). Use Claude if there is one."""
+    print(f"[Brain] Local brain unreachable ({error.__class__.__name__}: {error}).")
+    claude_key = _claude_provider_key(_load_config()) if use_claude else None
+    if claude_key is None:
+        return ("My local brain isn't running. Start Ollama, or say 'switch to Claude'.")
+    notice = "My local brain isn't running, so I asked Claude."
+    if stream is not None:
+        stream.feed(notice + " ")
+    answer = _call_claude_provider(get_providers()[claude_key], user_text, facts, turn, stream)
+    return f"{notice} {answer}"
+
+
 _busy_count = 0
 _busy_lock = threading.Lock()
 
@@ -1133,8 +1147,13 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
             print(f"[WARN] Primary provider failed ({e}), trying Ollama fallback")
             cfg = _load_config()
             ollama_provider = cfg["llm"]["providers"].get("ollama", {"model": "qwen3:4b-q4_K_M"})
-            response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7),
-                                                  full_messages, turn, on_text)
+            try:
+                response_text = _call_ollama_provider(ollama_provider, cfg["llm"].get("temperature", 0.7),
+                                                      full_messages, turn, on_text)
+            except _Aborted:
+                raise
+            except Exception as e2:
+                response_text = _local_brain_down(e2, user_text, facts, turn, stream, use_claude=not uses_claude)
         brain_spoke = stream is not None
 
         # The local brain is stateless, so it needs this history; the Claude session keeps its own.
