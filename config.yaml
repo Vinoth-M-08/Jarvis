@@ -21,6 +21,7 @@ llm:
       model: qwen3:4b-q4_K_M
       base_url: http://localhost:11434
       think: false
+      keep_alive: 30m      # stays in GPU memory this long after the last use (~3.3 GB)
 brain:
   daily_claude_budget: 100
   warn_at_percent: 80
@@ -72,6 +73,8 @@ context:
   summarize_after: 8
   max_tokens: 2500
 voice:
+  always_listening: true       # no wake word: everything you say is a request. "stop listening"
+                               # pauses; then "Jarvis, ..." wakes it. false = say "Hey Jarvis" first.
   wake_reply: chime            # chime (instant) | yes (spoken "Yes?")
   end_silence_ms: 700          # how long you pause before Jarvis treats it as the end of your sentence
   first_listen_seconds: 6      # after the wake word: give up if you don't start talking by then

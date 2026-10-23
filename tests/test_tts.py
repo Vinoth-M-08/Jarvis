@@ -100,3 +100,17 @@ def test_speech_stream_first_piece_ends_at_a_pause():
     s2.feed("Sure, opening it.")        # pause too early (< 14 chars): wait for the sentence
     s2.finish()
     assert s2.spoken == ["Sure, opening it."]
+
+
+def test_own_voice_counts_while_speaking_and_just_after(monkeypatch):
+    """The mic ignores Jarvis's own voice and the speakers' echo right after it."""
+    from jarvis import tts
+    clock = [1000.0]
+    monkeypatch.setattr(tts.time, "time", lambda: clock[0])
+    tts._speaking.set()
+    assert tts.own_voice_audible()
+    tts._done_speaking()
+    clock[0] += 0.2
+    assert tts.own_voice_audible(tail_s=0.4)        # echo still in the room
+    clock[0] += 0.5
+    assert not tts.own_voice_audible(tail_s=0.4)

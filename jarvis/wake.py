@@ -99,6 +99,11 @@ def listen_for_wake_word(callback) -> None:
             # Skip if in cooldown window (prevents echo re-trigger)
             if now < _ignore_until[0]:
                 continue
+            # Jarvis's own voice saying "...the Jarvis page" is not the owner calling.
+            # (Interrupt a reply with Esc, or "stop" when it's listening.)
+            from jarvis.tts import own_voice_audible
+            if own_voice_audible():
+                continue
 
             if _busy.locked():
                 # BUSY: wake word = stop everything

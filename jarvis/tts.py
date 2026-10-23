@@ -89,11 +89,26 @@ def is_speaking() -> bool:
     return _speaking.is_set()
 
 
+_last_spoke_at = 0.0
+
+
+def _done_speaking() -> None:
+    global _last_spoke_at
+    _speaking.clear()
+    _last_spoke_at = time.time()
+
+
+def own_voice_audible(tail_s: float = 0.4) -> bool:
+    """True while Jarvis is talking and for tail_s after (the speakers' echo) — the mic must not
+    treat that as the owner (Jarvis saying "...the Jarvis page" used to trigger its own wake word)."""
+    return _speaking.is_set() or time.time() - _last_spoke_at < tail_s
+
+
 def stop_speaking() -> None:
     """Interrupt current speech playback — instant."""
     _interrupt.set()
     sd.stop()
-    _speaking.clear()
+    _done_speaking()
 
 
 def _wait_or_interrupt() -> bool:
@@ -116,7 +131,7 @@ def speak(text: str) -> None:
     _speaking.set()
     sd.play(audio, samplerate=24000)
     _wait_or_interrupt()
-    _speaking.clear()
+    _done_speaking()
 
 
 def speak_streamed(text: str) -> None:
@@ -265,7 +280,7 @@ class SpeechStream:
                     self.first_audio_at = time.time()
                 self._play(audio)
         finally:
-            _speaking.clear()
+            _done_speaking()
 
     @staticmethod
     def _drain(q: queue.Queue) -> None:

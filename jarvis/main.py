@@ -26,8 +26,9 @@ from openai import OpenAI
 from jarvis.wake import listen_for_wake_word
 from jarvis.stt import record_utterance, transcribe_audio, set_abort_event, has_speech
 from jarvis import stt
-from jarvis.conversation import is_filler, is_goodbye, strip_wake_words
-from jarvis.tts import speak, is_speaking, stop_speaking, SpeechStream, prepare_phrases
+from jarvis.conversation import (after_name, is_filler, is_goodbye, is_sleep_command, is_wake_only,
+                                 mentions_name, strip_wake_words)
+from jarvis.tts import speak, is_speaking, stop_speaking, SpeechStream, prepare_phrases, own_voice_audible
 from jarvis.context import ContextManager
 from jarvis.memory import Memory
 from jarvis.tools.router import TOOL_SCHEMAS, dispatch
@@ -252,6 +253,7 @@ _voice_cfg = _startup_cfg.get("voice") or {}
 _WAKE_REPLY = str(_voice_cfg.get("wake_reply", "chime"))            # chime | yes
 _END_SILENCE_S = float(_voice_cfg.get("end_silence_ms", 700)) / 1000
 _FIRST_LISTEN_S = float(_voice_cfg.get("first_listen_seconds", 6))
+_ALWAYS_LISTENING = bool(_voice_cfg.get("always_listening", False))   # no wake word at all
 _CONVERSATION_IDLE_S = float(_voice_cfg.get("conversation_idle_seconds",
                                             _voice_cfg.get("follow_up_seconds", 300)))   # 0 = one request per wake word
 _last_speech_end = 0.0
@@ -266,7 +268,7 @@ def _listen(start_timeout_s: float, max_seconds: float = 30, raise_on_abort: boo
     stats: dict = {}
     try:
         audio = record_utterance(end_silence_s=_END_SILENCE_S, start_timeout_s=start_timeout_s,
-                                 max_seconds=max_seconds, stats=stats, ignore=is_speaking)
+                                 max_seconds=max_seconds, stats=stats, ignore=own_voice_audible)
         _last_speech_end = time.time() - _END_SILENCE_S   # recording stops end_silence after the last word
     finally:
         resume_wake_mic()
@@ -701,19 +703,41 @@ def _get_claude_brain(provider_cfg: dict) -> ClaudeBrain:
 
 
 def _warm_up_claude() -> None:
-    """Open the Claude session in the background so the next question skips the ~6 s first-request cost."""
-    provider = _active_provider_cfg()
-    if provider.get("type") != "claude_agent":
-        return
+    """Get both brains ready in the background, so the first request to each isn't slow:
+    Claude whenever it's configured (in local mode it takes the multi-step tasks), and the
+    local model when it's the active brain or fast mode is on (if the GPU has room)."""
+    cfg = _load_config()
+    claude_key = _claude_provider_key(cfg)
+    active = _active_provider_cfg()
+    if claude_key is not None:
+        claude = get_providers()[claude_key]
 
-    def _run():
-        try:
-            secs = _get_claude_brain(provider).warm_up()
-            print(f"[Claude] Ready: {provider.get('model')} (warm-up {secs:.1f}s).")
-        except Exception as e:
-            print(f"[Claude] Warm-up failed: {e}")
+        def _claude():
+            try:
+                secs = _get_claude_brain(claude).warm_up()
+                print(f"[Claude] Ready: {claude.get('model')} (warm-up {secs:.1f}s).")
+            except Exception as e:
+                print(f"[Claude] Warm-up failed: {e}")
 
-    threading.Thread(target=_run, name="claude-warm-up", daemon=True).start()
+        threading.Thread(target=_claude, name="claude-warm-up", daemon=True).start()
+
+    if active.get("type") == "ollama" or decision_maker.local_for_simple:
+        def _local():
+            ok, why = local_backup.ready()
+            if not ok:
+                print(f"[Local] Not preloaded: {why}.")
+                return
+            try:
+                t = time.time()
+                keep = get_providers().get("ollama", {}).get("keep_alive", _brain_cfg.get("backup_keep_alive", "5m"))
+                ollama.chat(model=local_backup.model, messages=[{"role": "user", "content": "hi"}], think=False,
+                            keep_alive=keep, options={"num_predict": 1})
+                local_backup.mark_used()
+                print(f"[Local] Ready: {local_backup.model} ({time.time() - t:.1f}s).")
+            except Exception as e:
+                print(f"[Local] Warm-up failed: {e}")
+
+        threading.Thread(target=_local, name="local-warm-up", daemon=True).start()
 
 
 def _call_claude_provider(provider_cfg: dict, user_text: str, facts: list[str], turn: TurnContext,
@@ -809,6 +833,71 @@ def handle_wake() -> None:
         print("[Jarvis] Listening for wake word...")
 
 
+def _answer_aloud(user_text: str, speech_end: float) -> None:
+    """Handle one spoken request and speak the reply while it is written (blocks until spoken)."""
+    t1 = time.time()
+    stream = _new_speech_stream()
+    try:
+        response_text = _process_request(user_text, source="voice", stream=stream)
+        print(f"[Jarvis] {response_text}   (reply written in {time.time() - t1:.1f}s)")
+        _broadcast({"type": "status", "message": "Speaking..."})
+    finally:
+        if stream is not None:
+            stream.finish()   # returns at once if Esc stopped it
+    if stream is not None and stream.first_audio_at:
+        print(f"[Timing] You stopped talking -> Jarvis started speaking: "
+              f"{stream.first_audio_at - speech_end:.1f}s")
+
+
+def always_listen() -> None:
+    """No wake word: everything said is a request. "Stop listening" pauses; then only speech
+    with the name ("Jarvis, wake up" / "Jarvis, open Spotify") is taken, recognised by Whisper.
+    Jarvis's own voice is never heard as a request (the mic counts as silence while it talks)."""
+    print("[Jarvis] Always listening — just talk. Say 'stop listening' to pause; 'Jarvis' wakes me again.")
+    asleep = False
+    while True:
+        _abort.clear()
+        try:
+            _broadcast({"type": "status", "message": "Sleeping." if asleep else "Listening..."})
+            heard = _listen(start_timeout_s=60, explain=False)
+            speech_end = _last_speech_end
+            if not heard:
+                continue
+            if asleep:
+                if not mentions_name(heard):
+                    continue
+                asleep = False
+                _play_sound(_WAKE_CHIME)
+                print("[Jarvis] Awake — listening again.")
+                heard = after_name(heard)
+                if is_wake_only(heard):
+                    continue
+            user_text = strip_wake_words(heard)
+            if not user_text or is_filler(user_text):
+                if user_text:
+                    print(f"[Jarvis] (ignored {user_text!r})")
+                continue
+            print(f"[You] {user_text}")
+            if is_sleep_command(user_text):
+                asleep = True
+                print("[Jarvis] Paused. Say 'Jarvis' to wake me.")
+                _speak_if_unmuted("Okay, I'll stop listening. Say Jarvis when you need me.")
+                continue
+            if _is_stop_command(user_text):
+                continue   # nothing is running to stop
+            _answer_aloud(user_text, speech_end)
+        except _Aborted:
+            print("[Jarvis] Stopped.")
+        except Exception as e:
+            import traceback
+            print(f"[ERROR] {e}")
+            traceback.print_exc()
+            if not _abort.is_set():
+                _speak_if_unmuted("Sorry, something went wrong.")
+        finally:
+            _abort.clear()
+
+
 def _handle_wake_inner() -> None:
     """One conversation: the request after the wake word, then more without the wake word until it's
     been quiet for conversation_idle_seconds, a goodbye ("that's all"), or Esc / "stop"."""
@@ -856,18 +945,7 @@ def _handle_wake_inner() -> None:
             print("[Jarvis] Conversation closed. Say 'Hey Jarvis' to start again.")
             return
 
-        t1 = time.time()
-        stream = _new_speech_stream()
-        try:
-            response_text = _process_request(user_text, source="voice", stream=stream)
-            print(f"[Jarvis] {response_text}   (reply written in {time.time() - t1:.1f}s)")
-            _broadcast({"type": "status", "message": "Speaking..."})
-        finally:
-            if stream is not None:
-                stream.finish()   # returns at once if Esc / "Hey Jarvis" stopped it
-        if stream is not None and stream.first_audio_at:
-            print(f"[Timing] You stopped talking -> Jarvis started speaking: "
-                  f"{stream.first_audio_at - speech_end:.1f}s")
+        _answer_aloud(user_text, speech_end)
         _check_abort()
 
         if _CONVERSATION_IDLE_S <= 0:
@@ -1304,7 +1382,10 @@ def main() -> None:
     # Kokoro is loaded now: make the fixed phrases ahead of time so they play instantly.
     threading.Thread(target=prepare_phrases, args=(_TOOL_ACK, "Okay.", "I didn't catch that."),
                      name="tts-phrases", daemon=True).start()
-    listen_for_wake_word(handle_wake)
+    if _ALWAYS_LISTENING:
+        always_listen()
+    else:
+        listen_for_wake_word(handle_wake)
 
 
 if __name__ == "__main__":

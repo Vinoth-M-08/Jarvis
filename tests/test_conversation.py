@@ -19,3 +19,13 @@ def test_goodbyes_end_the_conversation_but_answers_do_not():
 def test_fillers_and_whisper_noise_are_ignored():
     assert is_filler("Um.") and is_filler("you") and is_filler(" ")
     assert not is_filler("yes") and not is_filler("what's the weather")
+
+
+def test_always_listening_phrases():
+    from jarvis.conversation import after_name, is_sleep_command, is_wake_only, mentions_name
+    assert is_sleep_command("Stop listening.") and is_sleep_command("go to sleep")
+    assert not is_sleep_command("stop the music")
+    assert mentions_name("Okay Jervis, wake up") and mentions_name("JARVIS") and not mentions_name("travis scott")
+    assert after_name("okay so Jarvis, open Spotify") == "open Spotify"
+    assert is_wake_only(after_name("Jarvis, wake up!")) and is_wake_only(after_name("Hey Jarvis"))
+    assert not is_wake_only("open spotify")
