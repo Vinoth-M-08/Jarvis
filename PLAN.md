@@ -490,6 +490,13 @@ Jarvis/                         # our fork of PanPenek/JarvisAi
 - Real sandbox for code execution → re-enable at Tier 2.
 - Phone access later (e.g. OpenClaw/Hermes channel) — evaluate separately.
 
+### Phase 8 — Auto-apply to JobOps jobs (planned)
+- Jarvis applies to the jobs that passed the JobOps gates: scripts fill the standard ATS
+  forms, the local LLM does the repetitive thinking, Claude only the hard parts.
+- Questions it can't answer **park** that application and it moves on; you answer later,
+  once, and parked applications resume. Everything kept as Markdown in `data/apply/`.
+- Full plan: [docs/AUTO_APPLY.md](docs/AUTO_APPLY.md).
+
 **Rough total:** 5–7 weeks part-time.
 
 ---
