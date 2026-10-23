@@ -1,7 +1,36 @@
 # Auto-apply — Jarvis applies to JobOps jobs for you
 
-> Status: **planned** (nothing built yet). Source of truth for the jobs is the JobOps
-> Google Sheet (via the JobOps app: `https://lambent-scone-b9805e.netlify.app`, `/api/jobs`).
+> Status: **Phase 1 built** (dry runs only — nothing is submitted). Source of truth for the
+> jobs is the JobOps Google Sheet (via the JobOps app: `https://lambent-scone-b9805e.netlify.app`,
+> `/api/jobs`). Code: `jarvis/apply/`.
+
+## Use it (Phase 1)
+
+```bash
+.venv\Scripts\python.exe -m jarvis.apply dry-run 5          # read 5 Greenhouse forms, answer or park
+.venv\Scripts\python.exe -m jarvis.apply inbox              # what Jarvis needs from you
+.venv\Scripts\python.exe -m jarvis.apply answer profile-email you@example.com
+.venv\Scripts\python.exe -m jarvis.apply detect-ats         # re-detect the ATS of other/blank jobs
+.venv\Scripts\python.exe -m jarvis.apply status
+```
+
+Or just fill in `data/apply/profile.md` (most questions are profile fields). By voice:
+*"What do you need from me?"* / *"How are my applications going?"*
+
+**First real run (2026-10-23, 5 top-matched Greenhouse jobs):** 4 parked, 1 closed (Bitwarden,
+posting gone). 16 distinct questions, mostly profile fields (name, email, phone, city,
+LinkedIn, website, notice period, current / expected CTC, years of experience, resume files
+for *amazon / paypal / p44*) plus a few one-offs ("Have you resigned from your current
+employer?", "What is your last working date?").
+
+**ATS re-detection of the 291 other/blank jobs:** Workday 92 · no apply link 83 · unknown 45 ·
+Workable 25 · Greenhouse 14 · Y Combinator 13 · Oracle 5 · SmartRecruiters 4 ·
+SuccessFactors 4 · Ashby 2 · Lever 2 · Keka 1 · iCIMS 1. So the easy group grows by 22,
+Workday is really ~140 jobs, and 83 jobs can't be applied to until they have a link.
+Details: `data/apply/ats_detected.md`. (Not written back to the Sheet yet — open question 2.)
+
+**Phase 1 still to do:** write-back to the Sheet; "Needs you" list in the HUD; the same job
+listed by two sources (Bitwarden is on Greenhouse *and* Wellfound) should be applied to once.
 
 ## Goal
 
@@ -109,9 +138,8 @@ used: 7 times, last 2026-10-26
 
 ## Open questions
 
-1. JobOps mentions an existing applier ("Playwright runs locally") — where is that code?
-   Build on it rather than start over.
+1. ~~Existing applier code?~~ None — built inside Jarvis (`jarvis/apply/`).
 2. How should Jarvis write to the Sheet: an Apps Script web endpoint, or the Google
    Sheets API (you do the Google sign-in)?
-3. Does this live inside Jarvis, or in the JobOps project with Jarvis calling it?
+3. ~~Inside Jarvis or JobOps?~~ Inside Jarvis.
 4. Wellfound: OK to automate given their terms?

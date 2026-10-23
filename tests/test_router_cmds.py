@@ -71,6 +71,8 @@ def test_time_and_date_answered_directly(router):
     ("use the ollama model", "brain", "local"),
     ("switch back to cloud", "brain", "claude"),
     ("switch from ollama to claude", "brain", "claude"),
+    ("What do you need from me?", "apply_status", None),
+    ("How are my job applications going?", "apply_status", None),
     ("Jarvis, fast mode on", "fast_chat", True),
     ("turn on fast replies", "fast_chat", True),
     ("fast mode", "fast_chat", True),

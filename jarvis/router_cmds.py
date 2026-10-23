@@ -22,7 +22,7 @@ class RouterMatch:
     tool: str | None = None            # tool to run through the gatekeeper
     args: dict = field(default_factory=dict)
     reply: str | None = None           # direct answer (no tool)
-    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed | forget_task | fast_chat
+    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed | forget_task | fast_chat | apply_status
     value: object = None               # brain: "claude"/"local"; claude_model: "opus"/"sonnet"/"haiku";
                                        # mute: bool; speed: "faster"/"slower"/"normal"/float
 
@@ -82,6 +82,9 @@ def _setting_rules(r) -> list[tuple[re.Pattern, Callable]]:
         (r(rf"use (?:the |your )?{_BRAIN}"), _brain),
         (r(r"(?:which|what) (?:brain|model|ai)(?: are you using| are you on| is (?:active|on))?"),
          lambda m, _: RouterMatch(setting="which_brain")),
+        (r(r"what do you need(?: from me)?|(?:do you have )?any questions for me|"
+           r"how are (?:my|the) (?:job )?applications(?: going)?|(?:job )?application status"),
+         lambda m, _: RouterMatch(setting="apply_status")),
         (r(r"(?:turn on |switch on |enable |start )?fast (?:mode|chat|replies|answers)(?: on)?"),
          lambda m, _: RouterMatch(setting="fast_chat", value=True)),
         (r(r"(?:turn off |switch off |disable |stop )fast (?:mode|chat|replies|answers)|fast (?:mode|chat|replies|answers) off"),

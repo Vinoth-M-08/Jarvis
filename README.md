@@ -284,7 +284,7 @@ tests/               pytest
 data/                audit.db, usage.db, tasks/ (your task files) and other runtime data (git-ignored)
 PLAN.md              full build plan
 NVIDIA_UPGRADES.md   GPU extras (Broadcast mic, CUDA checks, VRAM gauge)
-docs/AUTO_APPLY.md   planned: Jarvis applies to JobOps jobs (park-and-ask questions)
+docs/AUTO_APPLY.md   auto-apply to JobOps jobs (phase 1: dry runs; jarvis/apply/)
 ```
 
 ```bash

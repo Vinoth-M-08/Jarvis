@@ -987,6 +987,11 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
         _warm_up_claude()
         return f"Switched to Claude {label}." if switched else f"Okay, Claude {label} from now on."
 
+    if name == "apply_status":
+        from jarvis.apply.runner import summary
+        from jarvis.apply.store import ApplyStore
+        return summary(ApplyStore(Path(_CONFIG_PATH).parent / "data" / "apply"))
+
     if name == "fast_chat":
         if bool(value) == decision_maker.local_for_simple:
             return "Fast mode is already on." if value else "Fast mode is already off."
