@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Mock Greenhouse application</title>
+<style>
+  .select__control { border: 1px solid #999; padding: 6px; width: 300px; position: relative; }
+  [role=listbox] { border: 1px solid #333; width: 300px; }
+  [role=option] { padding: 4px; cursor: pointer; }
+  .error-message { color: red; }
+</style></head>
+<body>
+<!-- Same structure as job-boards.greenhouse.io forms: field ids = API field names. Local test page only. -->
+<h1>Software Engineer at Mockco</h1>
+<form id="application-form" onsubmit="return false">
+  <label for="first_name">First Name*</label><input id="first_name" type="text" aria-required="true"><br>
+  <label for="last_name">Last Name*</label><input id="last_name" type="text" aria-required="true"><br>
+  <label for="email">Email*</label><input id="email" type="text" aria-required="true"><br>
+  <label for="phone">Phone</label><input id="phone" type="tel"><br>
+  <label>Resume/CV*</label><input id="resume" type="file"><br>
+  <label for="question_1">LinkedIn Profile*</label><textarea id="question_1"></textarea><br>
+  <label for="question_2">Have you resigned from your current employer?*</label>
+  <div class="select__control"><span class="value">Select...</span>
+    <input id="question_2" type="text" role="combobox" aria-required="true" style="width: 80px"></div>
+  <div id="menu_2" role="listbox" hidden>
+    <div role="option">Yes</div><div role="option">No</div>
+  </div><br>
+  <fieldset><legend>Desired compensation*</legend>
+    <input type="checkbox" id="question_3[]_1" name="question_3[]"><label for="question_3[]_1">7,00,000 to 10,00,000 per year</label>
+    <input type="checkbox" id="question_3[]_2" name="question_3[]"><label for="question_3[]_2">11,00,000 to 15,00,000 per year</label>
+  </fieldset>
+  <div class="error-message" id="err"></div>
+  <button type="button" id="submit">Submit application</button>
+</form>
+<script>
+  const box = document.getElementById('question_2'), menu = document.getElementById('menu_2');
+  box.addEventListener('click', () => { menu.hidden = false; });
+  menu.addEventListener('click', (e) => {
+    if (e.target.getAttribute('role') !== 'option') return;
+    document.querySelector('.select__control .value').textContent = e.target.textContent;
+    box.dataset.value = e.target.textContent; menu.hidden = true;
+  });
+  document.getElementById('submit').addEventListener('click', () => {
+    const missing = [];
+    for (const id of ['first_name', 'last_name', 'email', 'question_1'])
+      if (!document.getElementById(id).value) missing.push(id);
+    if (!document.getElementById('resume').files.length) missing.push('resume');
+    if (!box.dataset.value) missing.push('question_2');
+    if (!document.querySelector('input[name="question_3[]"]:checked')) missing.push('question_3');
+    if (missing.length) {
+      document.getElementById('err').textContent = 'This field is required: ' + missing.join(', ');
+      document.getElementById('first_name').setAttribute('aria-invalid', String(missing.includes('first_name')));
+      return;
+    }
+    window.__submitted = { email: document.getElementById('email').value, resigned: box.dataset.value,
+      pay: document.querySelector('input[name="question_3[]"]:checked').nextElementSibling.textContent,
+      resume: document.getElementById('resume').files[0].name };
+    document.body.innerHTML = location.hash === '#code'
+      ? '<h1>Check your email</h1><p>Enter the security code we sent to your email.</p><input id="code">'
+      : '<h1>Thank you for applying!</h1><p>Your application has been submitted.</p>';
+  });
+</script>
+</body>
+</html>

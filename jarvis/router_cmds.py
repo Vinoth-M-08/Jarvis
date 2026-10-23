@@ -22,7 +22,7 @@ class RouterMatch:
     tool: str | None = None            # tool to run through the gatekeeper
     args: dict = field(default_factory=dict)
     reply: str | None = None           # direct answer (no tool)
-    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed | forget_task | fast_chat | apply_status | apply_run | apply_questions
+    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed | forget_task | fast_chat | apply_status | apply_run | apply_questions | apply_submit
     value: object = None               # brain: "claude"/"local"; claude_model: "opus"/"sonnet"/"haiku";
                                        # mute: bool; speed: "faster"/"slower"/"normal"/float
 
@@ -82,6 +82,9 @@ def _setting_rules(r) -> list[tuple[re.Pattern, Callable]]:
         (r(rf"use (?:the |your )?{_BRAIN}"), _brain),
         (r(r"(?:which|what) (?:brain|model|ai)(?: are you using| are you on| is (?:active|on))?"),
          lambda m, _: RouterMatch(setting="which_brain")),
+        (r(r"(?:submit|send) (?:my |the |all (?:the |my )?)?(?:ready )?(?:job )?applications(?: now)?|"
+           r"(?:submit|send) (?:the )?ready ones"),
+         lambda m, _: RouterMatch(setting="apply_submit")),
         (r(r"(?:ask me|go through|let'?s (?:do|go through|answer)|answer) (?:your|the|my|all (?:the|your|my)) "
            r"(?:job |application )?questions(?: now)?|ask me what you need"),
          lambda m, _: RouterMatch(setting="apply_questions")),

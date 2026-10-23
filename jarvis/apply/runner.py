@@ -10,7 +10,9 @@ from jarvis.apply.resolver import Question, Resolver
 from jarvis.apply.sources import clean, greenhouse_questions, to_apply
 from jarvis.apply.store import ApplyStore, slugify, write_doc
 
-SUPPORTED = {"greenhouse"}   # phase 1 dry run; the other easy sources follow in phase 2
+SUPPORTED = {"greenhouse"}   # Greenhouse first; the other easy sources follow
+DONE_STATUS = {"submitted", "handoff", "duplicate"}   # never re-checked
+KEEP_STATUS = {"approved"}
 
 
 def local_llm(model: str | None = None) -> Callable[[str], str] | None:
@@ -44,6 +46,9 @@ def check_application(store: ApplyStore, resolver: Resolver, job: dict) -> dict:
     """Dry run for one job: read its form, answer every question or park it. Submits nothing."""
     meta = job_meta(job)
     app_id = meta["job_id"] or slugify(f"{meta['company']}-{meta['role']}")
+    prior = store.application(app_id)
+    if prior.get("status") in DONE_STATUS:
+        return prior                                  # submitted / handed to you: never re-checked
     ats = ats_mod.from_text(meta["link"]) or meta["ats"]
     meta.update(ats=ats, checked=time.strftime("%Y-%m-%d %H:%M"), mode="dry run (nothing submitted)")
     if ats not in SUPPORTED:
@@ -64,7 +69,7 @@ def check_application(store: ApplyStore, resolver: Resolver, job: dict) -> dict:
         store.write_application(app_id, meta, [])
         return meta
 
-    rows, waiting = [], []
+    rows, waiting, fields = [], [], []
     for q in questions:
         r = resolver.resolve(q, job)
         if r.park:
@@ -75,8 +80,15 @@ def check_application(store: ApplyStore, resolver: Resolver, job: dict) -> dict:
             rows.append((q.label + (" *" if q.required else ""), "— waiting for you —", "parked"))
         else:
             rows.append((q.label + (" *" if q.required else ""), r.answer or "", r.source))
-    meta.update(status="parked" if waiting else "ready", waiting_on=sorted(set(waiting)),
-                questions=len(questions), board=ids[0], gh_job=ids[1])
+            if r.answer not in (None, "") and q.field_name:
+                fields.append({"name": q.field_name, "kind": q.kind, "label": q.label,
+                               "value": r.answer, "required": q.required})
+    status = "parked" if waiting else "ready"
+    if prior.get("status") in KEEP_STATUS and not waiting:   # re-checking doesn't undo your approval
+        status = prior["status"]
+    meta.update(status=status, waiting_on=sorted(set(waiting)), questions=len(questions),
+                board=ids[0], gh_job=ids[1], form_url=f"https://job-boards.greenhouse.io/{ids[0]}/jobs/{ids[1]}",
+                fields=fields)
     store.write_application(app_id, meta, rows)
     return meta
 
@@ -187,8 +199,10 @@ def summary(store: ApplyStore) -> str:
     if not apps and not inbox:
         return "No applications checked yet."
     parts = [f"{counts['ready']} ready", f"{counts['parked']} parked"]
-    if counts["failed"]:
-        parts.append(f"{counts['failed']} closed")
+    for key, word in (("approved", "approved"), ("submitted", "submitted"), ("handoff", "waiting in the apply window"),
+                      ("error", "with errors"), ("failed", "closed")):
+        if counts[key]:
+            parts.append(f"{counts[key]} {word}")
     text = "Applications: " + ", ".join(parts) + "."
     if inbox:
         top = sorted(inbox, key=lambda i: -len(i.get("waiting") or []))[:3]

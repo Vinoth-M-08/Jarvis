@@ -116,3 +116,8 @@ security:
   audit_db: data/audit.db
   confirm_timeout_s: 30
   elevation_max_minutes: 15
+apply:                         # auto-apply (docs/AUTO_APPLY.md)
+  daily_limit: 20              # at most this many submissions a day
+  delay_seconds: [20, 60]      # random wait between two submissions
+  voice_approval: true         # "submit my applications" -> "yes, submit" approves by voice (else dashboard only)
+  show_browser: true           # fill forms in a visible Chrome window you can watch

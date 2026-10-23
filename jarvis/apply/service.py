@@ -6,8 +6,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
+from datetime import datetime
+
 from jarvis.apply import runner
-from jarvis.apply.resolver import match_option
+from jarvis.apply.resolver import Resolver, match_option
+from jarvis.apply.submitter import Submitter
 from jarvis.apply.sources import clean, jobops_jobs
 from jarvis.apply.store import ApplyStore, read_doc, slugify
 
@@ -81,6 +84,10 @@ def find_resume_files(name: str, roots: list[Path] | None = None, limit: int = 5
     return [p for _, p in found[:limit]]
 
 
+def _stamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
 def _pdfs(root: Path, depth: int):
     try:
         for entry in root.iterdir():
@@ -97,7 +104,9 @@ class ApplyService:
 
     def __init__(self, root: str | Path, llm: Callable[[], Callable[[str], str] | None] = runner.local_llm,
                  on_change: Callable[[], None] | None = None, notify: Callable[[str], None] | None = None,
-                 jobs: Callable[[], list[dict]] = jobops_jobs):
+                 jobs: Callable[[], list[dict]] = jobops_jobs, form_factory: Callable[[], object] | None = None,
+                 audit: Callable[[str, dict, str], None] | None = None, daily_limit: int = 20,
+                 delay_s: tuple[float, float] = (20, 60), headless: bool = False):
         self.store = ApplyStore(root)
         self._llm = llm
         self._on_change = on_change or (lambda: None)
@@ -105,6 +114,40 @@ class ApplyService:
         self._jobs = jobs
         self._lock = threading.Lock()
         self.running = False
+        for a in self.store.applications():           # Jarvis closed mid-submit: try again later
+            if a.get("status") == "submitting":
+                self.store.update_application(a["job_id"], status="approved")
+        if form_factory is None:
+            from jarvis.apply.greenhouse_form import GreenhouseForm
+            form_factory = lambda: GreenhouseForm(self.store.root / "chrome-profile", headless=headless)
+        self.submitter = Submitter(self.store, form_factory, self._recheck, self._on_change, self._notify,
+                                   audit or (lambda tool, args, why: None), daily_limit, delay_s)
+
+    # ─── approve / preview / submit ───
+    def ready_ids(self) -> list[str]:
+        return [a["job_id"] for a in self.store.applications() if a.get("status") == "ready"]
+
+    def approve(self, app_ids: list[str] | None = None, by: str = "dashboard") -> list[str]:
+        """Approve ready applications (all of them if app_ids is None) and queue them for submitting."""
+        ready = set(self.ready_ids())
+        ids = [i for i in (app_ids if app_ids is not None else sorted(ready)) if i in ready]
+        for i in ids:
+            self.store.update_application(i, status="approved", approved=f"{_stamp()} by {by}")
+        if ids:
+            self.store.log(f"approved {len(ids)} for submitting ({by})")
+            self.submitter.submit(ids)
+        self._on_change()
+        return ids
+
+    def preview(self, app_id: str) -> None:
+        self.submitter.preview(app_id)
+
+    def _recheck(self, meta: dict) -> dict:
+        job = runner._job_from_record(meta)
+        if not job:
+            return meta
+        with self._lock:
+            return runner.check_application(self.store, Resolver(self.store, self._llm()), job)
 
     # ─── dashboard ───
     def snapshot(self) -> dict:
@@ -121,11 +164,14 @@ class ApplyService:
         detected = self.store.root / "ats_detected.md"
         ats = read_doc(detected)[0].get("counts", {}) if detected.exists() else {}
         return {
-            "summary": runner.summary(self.store), "running": self.running,
-            "counts": {k: counts.get(k, 0) for k in ("ready", "parked", "failed", "later", "manual", "error")},
+            "summary": runner.summary(self.store), "running": self.running, "submitting": self.submitter.busy,
+            "submitted_today": self.submitter.submitted_today(), "daily_limit": self.submitter.daily_limit,
+            "counts": {k: counts.get(k, 0) for k in ("ready", "parked", "approved", "submitting", "submitted",
+                                                     "handoff", "error", "failed", "later", "manual", "duplicate")},
             "inbox": inbox,
             "applications": [{k: a.get(k) for k in ("job_id", "company", "role", "status", "ats", "link", "match",
-                                                    "checked", "note", "waiting_on", "resume")} for a in apps],
+                                                    "checked", "note", "waiting_on", "resume", "submitted_at",
+                                                    "screenshot", "result_screenshot", "form_url")} for a in apps],
             "ats": ats, "profile_path": str(self.store.profile_path),
         }
 

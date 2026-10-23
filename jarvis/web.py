@@ -105,6 +105,22 @@ async def api_apply_answer(request: Request):
                                        for r in done["rechecked"]]})
 
 
+@app.post("/api/apply/approve")
+async def api_apply_approve(request: Request):
+    """Your approval to submit: {"ids": [...]} or {"all_ready": true}. Only 'ready' ones are taken."""
+    body = await request.json()
+    ids = None if body.get("all_ready") else [str(i) for i in body.get("ids") or []]
+    approved = await asyncio.get_running_loop().run_in_executor(None, _apply().approve, ids, "dashboard")
+    return JSONResponse({"status": "ok", "approved": approved})
+
+
+@app.post("/api/apply/preview")
+async def api_apply_preview(request: Request):
+    body = await request.json()
+    _apply().preview(str(body.get("id", "")))
+    return JSONResponse({"status": "ok"})
+
+
 @app.post("/api/apply/run")
 async def api_apply_run(request: Request):
     body = await request.json() if request.headers.get("content-length") not in (None, "0") else {}

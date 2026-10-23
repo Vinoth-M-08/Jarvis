@@ -200,6 +200,14 @@ class ApplyStore:
             lines.append(f"| {cell(q)} | {cell(a)} | {cell(s)} |")
         write_doc(self.root / "applications" / f"{slugify(app_id, 80)}.md", meta, "\n".join(lines) + "\n")
 
+    def update_application(self, app_id: str, **changes) -> dict:
+        """Change fields in an application's front matter, keeping its question table."""
+        path = self.root / "applications" / f"{slugify(app_id, 80)}.md"
+        meta, body = read_doc(path) if path.exists() else ({}, "")
+        meta.update(changes)
+        write_doc(path, meta, body)
+        return meta
+
     def application(self, app_id: str) -> dict:
         path = self.root / "applications" / f"{slugify(app_id, 80)}.md"
         return read_doc(path)[0] if path.exists() else {}

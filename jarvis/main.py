@@ -175,9 +175,17 @@ local_backup = LocalBackup(
 )
 notifier = Notifier(speak=_speak_if_unmuted, broadcast=_broadcast, is_busy=lambda: is_busy())
 # Auto-apply (docs/AUTO_APPLY.md): dashboard + voice. Results are announced at the next pause.
-apply_service = ApplyService(Path(_CONFIG_PATH).parent / "data" / "apply",
-                             on_change=lambda: _broadcast({"type": "apply_changed"}),
-                             notify=lambda text: notifier.routine(text))
+_apply_cfg = _startup_cfg.get("apply") or {}
+_APPLY_VOICE_APPROVAL = bool(_apply_cfg.get("voice_approval", True))
+apply_service = ApplyService(
+    Path(_CONFIG_PATH).parent / "data" / "apply",
+    on_change=lambda: _broadcast({"type": "apply_changed"}),
+    notify=lambda text: notifier.routine(text),
+    audit=lambda tool, args, why: gatekeeper.audit.record("apply", "owner", tool, args, 2, "allow", why),
+    daily_limit=int(_apply_cfg.get("daily_limit", 20)),
+    delay_s=tuple(_apply_cfg.get("delay_seconds", [20, 60])),
+    headless=not bool(_apply_cfg.get("show_browser", True)),
+)
 _voice_session: str | None = None   # set by a command; runs in the voice loop after the reply is spoken
 
 
@@ -863,6 +871,32 @@ def _answer_aloud(user_text: str, speech_end: float) -> None:
     if _voice_session == "apply_questions":
         _voice_session = None
         _apply_question_session()
+    elif _voice_session == "apply_submit":
+        _voice_session = None
+        _apply_submit_confirmation()
+
+
+# Submitting is sent on your behalf: the spoken OK has to say so ("yes, submit", "send them").
+_CONFIRM_SUBMIT = re.compile(r"\b(?:submit|send)\b", re.I)
+_NO = re.compile(r"^(?:no|nope|not now|don'?t|wait|cancel|stop|later)\b", re.I)
+
+
+def _apply_submit_confirmation() -> None:
+    """After "N ready: ... Should I submit them?" — approve only on an answer that says submit/send."""
+    for attempt in range(2):
+        heard = _listen(start_timeout_s=10, explain=False)
+        print(f"[Apply] submit confirmation -> {heard!r}")
+        if heard and _CONFIRM_SUBMIT.search(heard) and not _NO.match(heard):
+            ids = apply_service.approve(by="voice")
+            gatekeeper.audit.record("apply", "voice", "apply_approve", {"ids": ids}, 2, "allow", f"you said: {heard}")
+            _speak_if_unmuted(f"Submitting {len(ids)} now, one at a time, in the apply window. "
+                              "I'll tell you how it goes." if ids else "Nothing was ready anymore.")
+            return
+        if heard and _YES.match(heard) and attempt == 0:
+            _speak_if_unmuted("To send applications for you, say 'yes, submit'.")
+            continue
+        break
+    _speak_if_unmuted("Okay, I won't submit. They're still ready on the dashboard.")
 
 
 _YES = re.compile(r"^(?:yes|yeah|yep|yup|sure|correct|right|ok(?:ay)?|use it|that one|go ahead)\b", re.I)
@@ -1051,6 +1085,7 @@ _SPEED_MIN, _SPEED_MAX, _SPEED_STEP, _SPEED_NORMAL = 0.7, 1.8, 0.15, 1.1
 
 def _apply_setting(name: str, value, turn: TurnContext) -> str:
     """Voice/typed settings commands (brain, mute, speed) — never reachable from a brain tool."""
+    global _voice_session
     if turn.source not in USER_SOURCES:
         return "I only change my settings when you ask me directly."
     gatekeeper.audit.record(turn.id, turn.source, "setting", {"name": name, "value": value}, 0, "allow", "settings command")
@@ -1086,6 +1121,21 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
         return (f"Checking the next {int(value or 10)} jobs now — I'll read each form and get the answers "
                 "ready, but not submit yet. I'll tell you when it's done.")
 
+    if name == "apply_submit":
+        ready = [a for a in apply_service.store.applications() if a.get("status") == "ready"]
+        if not ready:
+            n_q = len(apply_service.store.inbox())
+            return "Nothing is ready to submit yet." + (
+                f" {n_q} question{'s' if n_q != 1 else ''} need you first — say 'ask me your questions'." if n_q else "")
+        if turn.source != "voice" or not _APPLY_VOICE_APPROVAL:
+            return (f"{len(ready)} application{'s are' if len(ready) != 1 else ' is'} ready. Approve them with "
+                    "the Approve buttons on the dashboard.")
+        _voice_session = "apply_submit"
+        names = [str(a.get("company")) for a in ready]
+        listed = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+        return (f"{len(ready)} ready: {listed}. Should I submit {'it' if len(ready) == 1 else 'them'}? "
+                "Say 'yes, submit' to confirm.")
+
     if name == "apply_questions":
         n = len(apply_service.store.inbox())
         if not n:
@@ -1093,7 +1143,6 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
         if turn.source != "voice":
             return (f"I have {n} question{'s' if n != 1 else ''}. Answer them in the Needs you list on the "
                     "dashboard, or say 'ask me your questions' out loud.")
-        global _voice_session
         _voice_session = "apply_questions"
         return f"Okay, {n} question{'s' if n != 1 else ''}. Say skip to skip one, or stop to finish."
 
