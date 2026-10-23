@@ -1232,7 +1232,9 @@ def main() -> None:
     import webbrowser
     from jarvis.web import start_web_background
 
-    print("[Jarvis] Starting up...")
+    from jarvis import console_log
+    log_path = console_log.start(Path(_CONFIG_PATH).parent / "data" / "logs")
+    print(f"[Jarvis] Starting up... (console also saved to {log_path})")
     print("[Jarvis] Keys: Esc = stop | F2 = type | INSERT = mute/unmute")
 
     start_web_background(port=7860)
