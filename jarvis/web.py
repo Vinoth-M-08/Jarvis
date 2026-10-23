@@ -70,6 +70,48 @@ async def index():
     return HTMLResponse((_STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
 
+# ─── Auto-apply (docs/AUTO_APPLY.md) ───
+
+def _apply():
+    from jarvis.main import apply_service
+    return apply_service
+
+
+@app.get("/api/apply")
+async def api_apply():
+    return JSONResponse(await asyncio.get_running_loop().run_in_executor(None, _apply().snapshot))
+
+
+@app.get("/api/apply/app")
+async def api_apply_app(id: str):
+    d = await asyncio.get_running_loop().run_in_executor(None, _apply().details, id)
+    return JSONResponse(d) if d else JSONResponse({"status": "error", "message": "not found"}, status_code=404)
+
+
+@app.post("/api/apply/answer")
+async def api_apply_answer(request: Request):
+    body = await request.json()
+    slug, text = str(body.get("slug", "")), str(body.get("text", "")).strip()
+    if not slug or not text:
+        return JSONResponse({"status": "error", "message": "slug and text are required"}, status_code=400)
+    try:
+        done = await asyncio.get_running_loop().run_in_executor(None, _apply().answer, slug, text)
+    except KeyError:
+        return JSONResponse({"status": "error", "message": "that question is no longer open"}, status_code=404)
+    except ValueError as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+    return JSONResponse({"status": "ok", "answer": done["answer"],
+                         "rechecked": [{"company": r.get("company"), "status": r.get("status")}
+                                       for r in done["rechecked"]]})
+
+
+@app.post("/api/apply/run")
+async def api_apply_run(request: Request):
+    body = await request.json() if request.headers.get("content-length") not in (None, "0") else {}
+    started = _apply().run_in_background(int(body.get("limit", 10)))
+    return JSONResponse({"status": "ok" if started else "busy"})
+
+
 # ─── Provider APIs ───
 
 @app.get("/api/providers")

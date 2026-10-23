@@ -22,7 +22,7 @@ class RouterMatch:
     tool: str | None = None            # tool to run through the gatekeeper
     args: dict = field(default_factory=dict)
     reply: str | None = None           # direct answer (no tool)
-    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed | forget_task | fast_chat | apply_status
+    setting: str | None = None         # Jarvis setting: brain | claude_model | which_brain | mute | speed | forget_task | fast_chat | apply_status | apply_run | apply_questions
     value: object = None               # brain: "claude"/"local"; claude_model: "opus"/"sonnet"/"haiku";
                                        # mute: bool; speed: "faster"/"slower"/"normal"/float
 
@@ -82,6 +82,13 @@ def _setting_rules(r) -> list[tuple[re.Pattern, Callable]]:
         (r(rf"use (?:the |your )?{_BRAIN}"), _brain),
         (r(r"(?:which|what) (?:brain|model|ai)(?: are you using| are you on| is (?:active|on))?"),
          lambda m, _: RouterMatch(setting="which_brain")),
+        (r(r"(?:ask me|go through|let'?s (?:do|go through|answer)|answer) (?:your|the|my|all (?:the|your|my)) "
+           r"(?:job |application )?questions(?: now)?|ask me what you need"),
+         lambda m, _: RouterMatch(setting="apply_questions")),
+        (r(r"(?:check|look for|find) (?:for )?(?:the next )?(?:(?P<n>\d+) )?new jobs|"
+           r"prepare (?:my |the )?(?:job )?applications|(?:start|run) (?:the )?(?:job check|applications?|applying)|"
+           r"apply (?:to|for) (?:new |the )?jobs"),
+         lambda m, _: RouterMatch(setting="apply_run", value=int(m.group("n")) if m.group("n") else None)),
         (r(r"what do you need(?: from me)?|(?:do you have )?any questions for me|"
            r"how are (?:my|the) (?:job )?applications(?: going)?|(?:job )?application status"),
          lambda m, _: RouterMatch(setting="apply_status")),

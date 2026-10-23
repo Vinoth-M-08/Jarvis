@@ -106,7 +106,8 @@ def _greenhouse_ids(link: str, fetch=None) -> tuple[str, str] | None:
 def dry_run(store: ApplyStore, jobs: list[dict], limit: int = 5, source: str = "greenhouse",
             llm: Callable[[str], str] | None = None, delay_s: float = 1.0) -> list[dict]:
     resolver = Resolver(store, llm)
-    picked = [j for j in to_apply(jobs) if (ats_mod.from_text(clean(j.get("Apply Link"))) or clean(j.get("ATS"))) == source]
+    picked = [j for j in to_apply(jobs)
+              if (ats_mod.from_text(clean(j.get("Apply Link"))) or clean(j.get("ATS")).lower()) == source]
     results = []
     for job in picked[:limit]:
         results.append(check_application(store, resolver, job))

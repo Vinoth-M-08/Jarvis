@@ -141,6 +141,42 @@
   .systems .s.on i { background: var(--mint); }
   .systems .s.warn i { background: var(--amber); }
 
+  /* Applications (auto-apply) */
+  .needs { flex: 1 1 360px; display: flex; flex-direction: column; gap: 10px; }
+  .needs.has { background: var(--amber); color: var(--amber-ink); }
+  .needs.has h2, .needs.has .subline { color: inherit; }
+  .tile .head2 { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .count-pill { min-width: 34px; padding: 4px 10px; border-radius: 999px; background: rgba(0,0,0,.18); font-weight: 700; text-align: center; }
+  .needs-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; padding-right: 4px; }
+  .q { padding: 12px 14px; border-radius: 18px; background: rgba(255,255,255,.55); display: flex; flex-direction: column; gap: 8px; }
+  .needs:not(.has) .q { background: var(--tile-2); }
+  .q .label { font-weight: 600; overflow-wrap: anywhere; }
+  .q .meta { font-size: 12px; opacity: .75; }
+  .q form { display: flex; flex-wrap: wrap; gap: 6px; }
+  .q input, .q select { flex: 1 1 180px; min-width: 0; min-height: 38px; padding: 0 12px; border-radius: 12px; border: 1px solid rgba(0,0,0,.2); background: #FFFDF8; color: #1A1206; }
+  .q button { min-height: 38px; padding: 0 14px; border: none; border-radius: 999px; background: var(--amber-ink); color: var(--amber); font-weight: 600; }
+  .q .err { font-size: 12px; color: #7A1E10; min-height: 0; }
+  .apps { flex: 2 1 480px; display: flex; flex-direction: column; gap: 12px; }
+  .apps-stats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .stat { flex: 1 1 90px; padding: 10px 14px; border-radius: 18px; background: var(--tile-2); }
+  .stat b { display: block; font-size: 26px; font-weight: 600; letter-spacing: -0.5px; }
+  .stat span { font-size: 12px; color: var(--dim); }
+  .apps-list { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; padding-right: 4px; }
+  .app-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 14px; background: #1E1F27; border: none; color: var(--text); text-align: left; width: 100%; }
+  .app-row:hover { background: #262735; }
+  .app-row .who { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .app-row .who small { color: var(--dim); }
+  .chip { flex: 0 0 auto; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--tile-2); color: var(--dim); }
+  .chip.ready { background: var(--mint); color: var(--mint-ink); }
+  .chip.parked { background: var(--amber); color: var(--amber-ink); }
+  .chip.failed, .chip.error { background: var(--red-bg); color: var(--red); }
+  .app-detail { padding: 10px 12px 12px; border-radius: 14px; background: #15161D; font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+  .app-detail table { width: 100%; border-collapse: collapse; }
+  .app-detail td { padding: 4px 6px; border-top: 1px solid #262735; vertical-align: top; overflow-wrap: anywhere; }
+  .app-detail td:first-child { width: 45%; color: var(--dim); }
+  .app-detail td.parked { color: var(--amber); }
+  .app-detail a { color: var(--blue); }
+
   /* Settings drawer */
   .drawer-back { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; z-index: 20; }
   .drawer-back.show { display: block; }
@@ -264,6 +300,24 @@
         <span class="s" id="sysDesktop"><i></i><span>Desktop</span></span>
         <span class="s" id="sysBrowser"><i></i><span>Browser</span></span>
       </div>
+    </section>
+  </div>
+
+  <div class="row">
+    <section class="tile needs" id="needsTile" aria-label="Needs you">
+      <div class="head2"><h2>Needs you</h2><span class="count-pill" id="needsCount">—</span></div>
+      <div class="subline" id="needsHint">Questions Jarvis couldn't answer for your applications. Answer here, or say “ask me your questions”.</div>
+      <div class="needs-list" id="needsList"></div>
+    </section>
+    <section class="tile apps" aria-label="Applications">
+      <div class="head2">
+        <h2>Applications</h2>
+        <button type="button" class="btn" id="applyRun">Check 10 new jobs</button>
+      </div>
+      <div class="subline" id="appsSummary">Loading…</div>
+      <div class="apps-stats" id="appsStats"></div>
+      <div class="apps-list" id="appsList"></div>
+      <div class="subline" id="appsAts"></div>
     </section>
   </div>
 </div>
@@ -581,11 +635,110 @@ async function loadActivity() {
   }
 }
 
+// ─── Applications (auto-apply) ───
+const STATUS_WORD = { ready: 'ready', parked: 'needs you', failed: 'closed', later: 'later', manual: 'manual', error: 'error' };
+let openApp = null;
+async function loadApply() {
+  try {
+    const r = await fetch('/api/apply');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    renderApply(await r.json());
+  } catch (e) {
+    $('appsSummary').textContent = 'Not connected';
+  }
+}
+function renderApply(d) {
+  const inbox = d.inbox || [];
+  $('needsCount').textContent = inbox.length;
+  $('needsTile').classList.toggle('has', inbox.length > 0);
+  $('needsHint').textContent = inbox.length
+    ? 'Answer once — every application waiting on it continues. Or say “ask me your questions”.'
+    : 'Nothing needs you. Jarvis parks anything it can’t answer here instead of guessing.';
+  const list = $('needsList');
+  list.replaceChildren(...inbox.map(questionCard));
+
+  $('appsSummary').textContent = d.running ? 'Checking jobs… (reading forms, nothing is submitted)' : d.summary;
+  $('applyRun').disabled = !!d.running;
+  $('applyRun').textContent = d.running ? 'Checking…' : 'Check 10 new jobs';
+  const c = d.counts || {};
+  $('appsStats').replaceChildren(
+    ...[['ready', 'Ready'], ['parked', 'Need you'], ['failed', 'Closed'], ['later', 'Later']].map(([k, label]) =>
+      el('div', { class: 'stat' }, el('b', { text: c[k] ?? 0 }), el('span', { text: label }))));
+  const apps = (d.applications || []).slice().sort((a, b) =>
+    ['ready', 'parked', 'later', 'manual', 'error', 'failed'].indexOf(a.status) - ['ready', 'parked', 'later', 'manual', 'error', 'failed'].indexOf(b.status));
+  const box = $('appsList');
+  box.replaceChildren();
+  if (!apps.length) box.append(el('div', { class: 'subline', text: 'No applications checked yet. Press “Check 10 new jobs” or say “check new jobs”.' }));
+  for (const a of apps) {
+    const waiting = (a.waiting_on || []).length;
+    const row = el('button', { type: 'button', class: 'app-row', 'aria-expanded': openApp === a.job_id ? 'true' : 'false',
+      onclick: () => { openApp = openApp === a.job_id ? null : a.job_id; loadApply(); } },
+      el('span', { class: 'chip ' + (a.status || ''), text: STATUS_WORD[a.status] || a.status }),
+      el('span', { class: 'who' }, el('span', { text: `${a.company} — ${a.role} ` }),
+        el('small', { text: waiting ? `· ${waiting} question${waiting === 1 ? '' : 's'}` : (a.note ? `· ${a.note}` : '') })));
+    box.append(row);
+    if (openApp === a.job_id) box.append(appDetail(a));
+  }
+  const ats = Object.entries(d.ats || {}).sort((x, y) => y[1] - x[1]);
+  $('appsAts').textContent = ats.length ? 'Other/blank sources re-detected: ' + ats.map(([k, n]) => `${k} ${n}`).join(' · ') : '';
+}
+function questionCard(item) {
+  const err = el('div', { class: 'err', role: 'alert' });
+  let input;
+  if (item.input === 'choice') {
+    input = el('select', { 'aria-label': item.question }, el('option', { value: '', text: 'Choose…' }),
+      ...(item.options || []).map((o) => el('option', { value: o, text: o })));
+  } else if (item.input === 'file') {
+    const sugg = item.suggestions || [];
+    input = el('input', { type: 'text', placeholder: sugg[0] || 'Full path of the PDF', value: sugg[0] || '',
+      'aria-label': item.question, list: 'sugg-' + item.slug });
+  } else {
+    input = el('input', { type: 'text', placeholder: 'Your answer', 'aria-label': item.question });
+  }
+  const form = el('form', { onsubmit: async (e) => {
+    e.preventDefault();
+    const text = (input.value || '').trim();
+    if (!text) { err.textContent = 'Type an answer first.'; return; }
+    err.textContent = 'Saving…';
+    const r = await fetch('/api/apply/answer', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: item.slug, text }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { err.textContent = d.message || 'Could not save.'; return; }
+    loadApply();
+  } }, input, el('button', { type: 'submit', text: 'Save' }));
+  const kids = [el('div', { class: 'label', text: item.question }),
+    el('div', { class: 'meta', text: `${item.waiting_count} application${item.waiting_count === 1 ? '' : 's'} waiting` +
+      (String(item.kind || '').startsWith('profile:') ? ' · saved to your profile' : '') }), form, err];
+  if (item.input === 'file' && (item.suggestions || []).length) {
+    kids.splice(3, 0, el('datalist', { id: 'sugg-' + item.slug }, ...item.suggestions.map((s) => el('option', { value: s }))));
+  }
+  return el('div', { class: 'q' }, ...kids);
+}
+function appDetail(a) {
+  const box = el('div', { class: 'app-detail' }, el('div', { class: 'subline', text: 'Loading…' }));
+  fetch('/api/apply/app?id=' + encodeURIComponent(a.job_id)).then((r) => r.json()).then((d) => {
+    const rows = (d.rows || []).map((q) => el('tr', {},
+      el('td', { text: q.question }),
+      el('td', { class: q.source === 'parked' ? 'parked' : '', text: q.source === 'parked' ? 'waiting for you' : (q.answer || '—') }),
+      el('td', { text: q.source })));
+    box.replaceChildren(
+      el('div', {}, el('a', { href: a.link, target: '_blank', rel: 'noopener', text: 'Open the posting' }),
+        el('span', { class: 'subline', text: ` · ${a.match || ''} · resume: ${a.resume || '—'} · checked ${a.checked || ''} · nothing submitted` })),
+      rows.length ? el('table', {}, el('tbody', {}, ...rows)) : el('div', { class: 'subline', text: a.note || 'No questions read.' }));
+  }).catch(() => box.replaceChildren(el('div', { class: 'subline', text: 'Could not load the details.' })));
+  return box;
+}
+$('applyRun').addEventListener('click', async () => {
+  $('applyRun').disabled = true;
+  await fetch('/api/apply/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ limit: 10 }) });
+  loadApply();
+});
+
 // ─── WebSocket ───
 let ws = null;
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => { loadProviders(); loadUsage(); loadActivity(); $('connText').textContent = 'Online'; $('connPill').querySelector('.dot').style.background = 'var(--mint)'; };
+  ws.onopen = () => { loadProviders(); loadUsage(); loadActivity(); loadApply(); $('connText').textContent = 'Online'; $('connPill').querySelector('.dot').style.background = 'var(--mint)'; };
   ws.onclose = () => { usageOffline('Not connected'); $('connText').textContent = 'Reconnecting…'; $('connPill').querySelector('.dot').style.background = 'var(--red)'; setTimeout(connect, 2000); };
   ws.onmessage = (e) => {
     let msg; try { msg = JSON.parse(e.data); } catch { return; }
@@ -617,6 +770,7 @@ function connect() {
       }
       case 'elevation': setElevation(msg.active, msg.remaining_s); break;
       case 'usage': loadUsage(); break;
+      case 'apply_changed': loadApply(); break;
       case 'notice': addMsg('system', (msg.level === 'urgent' ? '⚠ ' : '') + msg.text); break;
       case 'mute': setMuted(msg.muted); break;
       case 'provider_changed': loadProviders(); loadClaudeModel(); break;
@@ -757,6 +911,7 @@ loadActivity();
 fetch('/api/mute').then((r) => r.json()).then((d) => setMuted(d.muted)).catch(() => {});
 setInterval(loadUsage, 20000);
 setInterval(loadActivity, 30000);
+setInterval(loadApply, 30000);
 connect();
 </script>
 </body>

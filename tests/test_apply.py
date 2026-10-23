@@ -142,3 +142,73 @@ def test_greenhouse_ids_from_company_career_page():
     assert runner._greenhouse_ids(link, fetch=no_board_in_page) == ("bitwarden", "7872214003")
     embedded = lambda u: (u, '<script src="https://boards.greenhouse.io/embed/job_board?for=bitwardeninc"></script>')
     assert runner._greenhouse_ids(link, fetch=embedded) == ("bitwardeninc", "7872214003")
+
+
+# --- service: dashboard + voice ---
+
+def test_pick_option_from_speech():
+    from jarvis.apply.service import pick_option
+    opts = ["Immediately", "Within 1 week", "Within 2 weeks", "Within 1 month"]
+    assert pick_option("the second one", opts) == "Within 1 week"
+    assert pick_option("option 4", opts) == "Within 1 month"
+    assert pick_option("last", opts) == "Within 1 month"
+    assert pick_option("within 1 month", opts) == "Within 1 month"     # not "option one"
+    assert pick_option("immediately.", opts) == "Immediately"
+    assert pick_option("maybe next year", opts) is None
+
+
+def test_normalize_spoken_email_and_phone():
+    from jarvis.apply.service import normalize_spoken
+    assert normalize_spoken("profile:email", "Gopi R 525 at gmail dot com") == "gopir525@gmail.com"
+    assert normalize_spoken("profile:phone", "+91 98765 43210.") == "+919876543210"
+    assert normalize_spoken("profile:city", "Chennai.") == "Chennai"
+
+
+def test_speakable_reads_options():
+    from jarvis.apply.service import speakable
+    assert speakable({"question": "Email", "kind": "profile:email"}) == "What's your email?"
+    s = speakable({"question": "Have you resigned?", "kind": "answer", "options": ["Yes", "No"]})
+    assert s == "Have you resigned? The options are: Yes, or No."
+
+
+def test_find_resume_files(tmp_path):
+    from jarvis.apply.service import find_resume_files
+    (tmp_path / "jobs").mkdir()
+    (tmp_path / "jobs" / "Vinoth_PayPal_Resume.pdf").write_bytes(b"%PDF")
+    (tmp_path / "Resume_general.pdf").write_bytes(b"%PDF")
+    (tmp_path / "invoice.pdf").write_bytes(b"%PDF")
+    found = find_resume_files("paypal", roots=[tmp_path])
+    assert found[0].endswith("Vinoth_PayPal_Resume.pdf") and not any("invoice" in f for f in found)
+
+
+def test_service_answers_and_snapshot(tmp_path, monkeypatch):
+    from jarvis.apply.service import ApplyService
+    monkeypatch.setattr(runner, "greenhouse_questions", lambda board, job: (list(FORM), {}))
+    changes = []
+    svc = ApplyService(tmp_path / "apply", llm=lambda: None, on_change=lambda: changes.append(1))
+    svc.store.set_profile("willing_to_relocate", "yes")
+    runner.check_application(svc.store, Resolver(svc.store), JOB)
+    snap = svc.snapshot()
+    assert snap["counts"]["parked"] == 1 and snap["inbox"][0]["waiting_count"] == 1
+    email = next(i for i in snap["inbox"] if i["slug"] == "profile-email")
+    assert email["input"] == "text"
+    done = svc.answer("profile-email", "me at example dot com")
+    assert done["answer"] == "me@example.com" and svc.store.profile()["email"] == "me@example.com"
+    with pytest.raises(ValueError):
+        svc.answer("are-you-willing-to-relocate", "maybe on Tuesdays")    # not one of the options
+    assert svc.answer("are-you-willing-to-relocate", "the second one")["answer"] == "Yes, anywhere"
+    assert changes and svc.details(JOB["Job ID"])["rows"][0]["question"].startswith("First Name")
+
+
+def test_background_run_reports_when_done(tmp_path, monkeypatch):
+    import threading
+    from jarvis.apply.service import ApplyService
+    monkeypatch.setattr(runner, "greenhouse_questions", lambda board, job: (list(FORM), {}))
+    monkeypatch.setattr(runner.time, "sleep", lambda s: None)
+    said, done = [], threading.Event()
+    svc = ApplyService(tmp_path / "apply", llm=lambda: None, jobs=lambda: [JOB],
+                       notify=lambda text: (said.append(text), done.set()))
+    assert svc.run_in_background(5)
+    assert done.wait(10)
+    assert said and said[0].startswith("Job check done: 1 checked — 0 ready, 1 parked.")
+    assert "ask me your questions" in said[0]

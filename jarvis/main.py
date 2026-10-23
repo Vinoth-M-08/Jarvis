@@ -26,6 +26,7 @@ from openai import OpenAI
 from jarvis.wake import listen_for_wake_word
 from jarvis.stt import record_utterance, transcribe_audio, set_abort_event, has_speech
 from jarvis import stt
+from jarvis.apply.service import ApplyService, END_WORDS, SKIP_WORDS, TYPE_IT, find_resume_files, speakable
 from jarvis.conversation import (after_name, is_filler, is_goodbye, is_sleep_command, is_wake_only,
                                  mentions_name, strip_wake_words)
 from jarvis.tts import speak, is_speaking, stop_speaking, SpeechStream, prepare_phrases, own_voice_audible
@@ -173,6 +174,11 @@ local_backup = LocalBackup(
     free_vram_gb=free_vram_gb,
 )
 notifier = Notifier(speak=_speak_if_unmuted, broadcast=_broadcast, is_busy=lambda: is_busy())
+# Auto-apply (docs/AUTO_APPLY.md): dashboard + voice. Results are announced at the next pause.
+apply_service = ApplyService(Path(_CONFIG_PATH).parent / "data" / "apply",
+                             on_change=lambda: _broadcast({"type": "apply_changed"}),
+                             notify=lambda text: notifier.routine(text))
+_voice_session: str | None = None   # set by a command; runs in the voice loop after the reply is spoken
 
 
 def usage_snapshot() -> dict:
@@ -369,6 +375,12 @@ _SETTINGS_HELP = (
     "the HUD settings. If asked, tell them to say: \"use the local brain\" or \"switch to Ollama\", "
     "\"switch to Claude\", \"use Sonnet\" / \"use Opus\" / \"use Haiku\", \"fast mode on\" / \"fast mode "
     "off\", \"mute yourself\", \"speak faster\".\n\n"
+    "JOB APPLICATIONS: you prepare job applications from the owner's JobOps list. For each job you read "
+    "the application form, fill in what you know from their profile and saved answers, and park any "
+    "question you can't answer — you don't submit yet. Don't open websites for this (JobOps is not "
+    "jobops.com). Tell the owner to say: \"check new jobs\" (prepare the next 10), \"ask me your "
+    "questions\" (answer the parked questions by voice), \"what do you need from me?\" (status). The "
+    "dashboard's Needs you and Applications panels show everything.\n\n"
 )
 
 
@@ -847,6 +859,83 @@ def _answer_aloud(user_text: str, speech_end: float) -> None:
     if stream is not None and stream.first_audio_at:
         print(f"[Timing] You stopped talking -> Jarvis started speaking: "
               f"{stream.first_audio_at - speech_end:.1f}s")
+    global _voice_session
+    if _voice_session == "apply_questions":
+        _voice_session = None
+        _apply_question_session()
+
+
+_YES = re.compile(r"^(?:yes|yeah|yep|yup|sure|correct|right|ok(?:ay)?|use it|that one|go ahead)\b", re.I)
+
+
+def _apply_question_session() -> None:
+    """Ask the parked application questions out loud, one at a time (most-waited first).
+    Only when you asked for it ("ask me your questions") — never sprung on you."""
+    say = _speak_if_unmuted
+    asked: set[str] = set()
+    misses = answered = 0
+    while True:
+        _check_abort()
+        items = [i for i in sorted(apply_service.store.inbox(), key=lambda i: -len(i.get("waiting") or []))
+                 if i["slug"] not in asked]
+        if not items:
+            say("That's all of them." if asked else "Nothing needs you right now.")
+            break
+        item = items[0]
+        asked.add(item["slug"])
+        kind = str(item.get("kind", ""))
+        _broadcast({"type": "status", "message": "Listening..."})
+
+        if kind in TYPE_IT:
+            say(f"{item['question']} is easier to type — it's in the Needs you list on the dashboard.")
+            continue
+        if kind.startswith("profile:resumes."):
+            name = kind.split(".", 1)[1]
+            files = find_resume_files(name)
+            if not files:
+                say(f"I couldn't find your {name} resume. Add its file path on the dashboard.")
+                continue
+            say(f"For the {name} resume, should I use {Path(files[0]).stem}?")
+            heard = _listen(start_timeout_s=10, explain=False)
+            if heard and _YES.match(heard):
+                apply_service.answer(item["slug"], files[0])
+                answered += 1
+                say("Done.")
+            elif heard and END_WORDS.match(heard):
+                say("Okay, I'll keep the rest for later.")
+                break
+            else:
+                say("Okay — you can pick the file on the dashboard.")
+            continue
+
+        say(speakable(item))
+        heard = _listen(start_timeout_s=12, explain=False)
+        print(f"[Apply] {item['question']} -> {heard!r}")
+        if not heard:
+            misses += 1
+            if misses >= 2:
+                say("I'll keep the rest for later.")
+                break
+            say("I'll ask that one later.")
+            continue
+        misses = 0
+        if END_WORDS.match(heard) or _is_stop_command(heard) or is_goodbye(heard):
+            say("Okay, I'll keep the rest for later.")
+            break
+        if SKIP_WORDS.match(heard):
+            say("Skipped.")
+            continue
+        try:
+            done = apply_service.answer(item["slug"], heard)
+        except ValueError as e:
+            say(f"I couldn't use that: {e}. I'll keep it for later.")
+            continue
+        answered += 1
+        ready = sum(1 for r in done["rechecked"] if r.get("status") == "ready")
+        say(f"Got it: {done['answer']}." + (f" {ready} application{'s' if ready != 1 else ''} now ready." if ready else ""))
+    if answered:
+        from jarvis.apply.runner import summary
+        say(summary(apply_service.store))
 
 
 def always_listen() -> None:
@@ -989,8 +1078,24 @@ def _apply_setting(name: str, value, turn: TurnContext) -> str:
 
     if name == "apply_status":
         from jarvis.apply.runner import summary
-        from jarvis.apply.store import ApplyStore
-        return summary(ApplyStore(Path(_CONFIG_PATH).parent / "data" / "apply"))
+        return summary(apply_service.store)
+
+    if name == "apply_run":
+        if not apply_service.run_in_background(int(value or 10)):
+            return "A job check is already running."
+        return (f"Checking the next {int(value or 10)} jobs now — I'll read each form and get the answers "
+                "ready, but not submit yet. I'll tell you when it's done.")
+
+    if name == "apply_questions":
+        n = len(apply_service.store.inbox())
+        if not n:
+            return "Nothing needs you right now."
+        if turn.source != "voice":
+            return (f"I have {n} question{'s' if n != 1 else ''}. Answer them in the Needs you list on the "
+                    "dashboard, or say 'ask me your questions' out loud.")
+        global _voice_session
+        _voice_session = "apply_questions"
+        return f"Okay, {n} question{'s' if n != 1 else ''}. Say skip to skip one, or stop to finish."
 
     if name == "fast_chat":
         if bool(value) == decision_maker.local_for_simple:
