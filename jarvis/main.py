@@ -896,13 +896,21 @@ def _on_barge_in() -> None:
     _broadcast({"type": "status", "message": "Listening..."})
 
 
+def _barge_in_is_you(words: str) -> bool:
+    """The first second of what was heard over Jarvis: yours, or its own voice coming back?"""
+    request = strip_wake_words(words)
+    if lock_guard.locked or not request or is_filler(request):
+        return False
+    if is_own_echo(request, recently_said(30)):
+        print(f"[Barge-in] My own voice, kept talking: {words!r}")
+        return False
+    return True
+
+
 def _on_barge_in_heard(text: str) -> None:
     request = strip_wake_words(text)
     if lock_guard.locked or not request or is_filler(request):
         print(f"[Jarvis] (ignored {text!r})")
-        return
-    if is_own_echo(request, recently_said(30)):
-        print(f"[Barge-in] That was my own voice, not you: ignored {text!r}")
         return
     _interruptions.append((request, time.time()))
     if _busy_count > 0:
@@ -918,7 +926,7 @@ overlay = Overlay(speaking=is_speaking, level=playback_level, locked=lambda: loc
 
 barge_in = BargeIn(on_interrupt=_on_barge_in, on_heard=_on_barge_in_heard, transcribe=transcribe_audio,
                    reference=lambda: playback_level(window_s=0.6),   # the speakers' echo can come back late
-                   vad_factory=stt.separate_vad_prob,
+                   vad_factory=stt.separate_vad_prob, confirm=_barge_in_is_you,
                    blocked=lambda: lock_guard.locked or is_muted())
 
 

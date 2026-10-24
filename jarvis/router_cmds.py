@@ -15,9 +15,13 @@ from typing import Callable
 
 # "Hey, can you mute yourself?" / "Hey Jarvis, please ..." — punctuation after hey/Jarvis used to stop
 # the command from being recognised (it went to the brain, which said it couldn't mute itself).
-_FILLER = re.compile(r"^(?:(?:hey|hi|ok|okay)[,!.]?\s+)?(?:jarvis[,!.]?\s+)?(?:please\s+|can you\s+|could you\s+)?",
+# "Maybe, can you mute yourself for now?" (24 Oct) went to the brain for the same reason: lead-ins
+# like maybe / so / actually and tails like "for now" are dropped too.
+_FILLER = re.compile(r"^(?:(?:hey|hi|ok|okay|maybe|so|actually|now|um|uh|alright|right)[,!.]?\s+)*"
+                     r"(?:jarvis[,!.]?\s+)?(?:please\s+|(?:can|could|would|will) you\s+(?:please\s+)?)?",
                      re.IGNORECASE)
-_TRAILING = re.compile(r"[\s.!?]*(?:please)?[\s.!?]*$", re.IGNORECASE)
+_TRAILING = re.compile(r"(?:[\s.!?,]*(?:please|for now|right now|for a (?:while|bit|moment|minute|second)|"
+                       r"for me|thanks|thank you|now))*[\s.!?,]*$", re.IGNORECASE)
 
 
 @dataclass
@@ -104,7 +108,7 @@ def _setting_rules(r) -> list[tuple[re.Pattern, Callable]]:
          lambda m, _: RouterMatch(setting="fast_chat", value=False)),
         (r(r"mute (?:yourself|your voice|jarvis)|(?:go )?silent(?: mode)?|text only(?: mode)?"),
          lambda m, _: RouterMatch(setting="mute", value=True)),
-        (r(r"unmute(?: yourself| your voice| jarvis)?|(?:talk|speak) (?:to me )?again|you can (?:talk|speak) (?:again|now)|voice on"),
+        (r(r"unmute(?: yourself| your voice| jarvis)?|(?:talk|speak) (?:to me )?again|you can (?:talk|speak)(?: again)?|voice on"),
          lambda m, _: RouterMatch(setting="mute", value=False)),
         (r(r"(?:speak|talk) (?P<dir>faster|slower)|(?P<dir2>speed up|slow down)(?: your voice| a bit| a little)?"),
          _speed_step),

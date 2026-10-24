@@ -1,14 +1,16 @@
 """Talking over Jarvis: while it answers, the mic stays open; when you speak it stops and listens.
 
-The hard part is that the mic also hears Jarvis itself (the speakers' echo). EchoGate learns how
-loud that echo is compared with what's being played (the ratio mic / playback, its median over
-recent frames) and only counts a frame as you when it's speech AND clearly louder than the echo
-should be. Before it has learned the ratio, nothing said over Jarvis's voice counts (in gaps
-between sentences it does). With headphones the echo is ~0, so any speech counts.
+The hard part is that the mic also hears Jarvis itself (the speakers' echo). Two checks:
+  1. EchoGate learns how loud that echo is compared with what's being played (the ratio mic /
+     playback, its median over recent frames) and flags a frame only when it's speech AND clearly
+     louder than the echo should be. With headphones the echo is ~0, so any speech is flagged.
+  2. A flag is only a suspicion. Jarvis keeps talking while ~1 s of it is transcribed; only if
+     confirm(words) says they're yours (not its own words coming back) does it stop. On 24 Oct
+     every flag was its own voice and it cut its replies off; now those are ignored.
 
 BargeIn runs one listener per reply: start() when the reply starts, finish() when it's over.
-On your voice: stop speaking at once, keep recording to the end of what you say, transcribe it and
-hand it to on_heard (which decides whether it's a new request and cancels the old one).
+Confirmed: stop speaking, record to the end of what you say, transcribe it and hand it to on_heard
+(which makes it the next request and cancels the old one).
 """
 from __future__ import annotations
 import threading
@@ -61,16 +63,20 @@ class BargeIn:
     def __init__(self, on_interrupt: Callable[[], None], on_heard: Callable[[str], None],
                  transcribe: Callable[[np.ndarray], str], reference: Callable[[], float],
                  vad_factory: Callable[[], Callable[[np.ndarray], float]],
+                 confirm: Callable[[str], bool] = lambda text: bool(text.strip()),
                  blocked: Callable[[], bool] = lambda: False, gate: EchoGate | None = None,
                  frames: Callable[[threading.Event], Iterable[np.ndarray]] = _mic_frames,
-                 end_silence_s: float = 0.7, max_seconds: float = 20, pre_roll_s: float = 0.45):
+                 end_silence_s: float = 0.7, max_seconds: float = 20, pre_roll_s: float = 0.45,
+                 probe_s: float = 1.0):
         self._on_interrupt, self._on_heard, self._transcribe = on_interrupt, on_heard, transcribe
         self._reference, self._vad_factory, self._blocked = reference, vad_factory, blocked
+        self._confirm = confirm
         self.gate = gate or EchoGate()        # kept across replies: the echo ratio is the room's, not the reply's
         self._frames = frames
         self._end_frames = max(1, round(end_silence_s / FRAME_S))
         self._max_frames = round(max_seconds / FRAME_S)
         self._pre_frames = max(1, round(pre_roll_s / FRAME_S))
+        self._probe_frames = max(1, round(probe_s / FRAME_S))
         self._stop = threading.Event()
         self._paused = 0
         self._lock = threading.Lock()
@@ -118,38 +124,66 @@ class BargeIn:
         if text:
             self._on_heard(text)
 
+    def _is_you(self, frames: list[np.ndarray]) -> bool:
+        try:
+            words = self._transcribe(np.concatenate(frames).astype(np.float32)).strip()
+        except Exception as e:
+            print(f"[Barge-in] Couldn't transcribe ({e}).")
+            return False
+        return bool(words) and self._confirm(words)
+
     def _capture(self) -> np.ndarray | None:
+        """watching -> (gate flags a voice) probing: ~1 s recorded while Jarvis keeps talking ->
+        (the words are yours) capturing: Jarvis stops, record to the end of your sentence."""
         if self._vad is None:
             self._vad = self._vad_factory()
         prob = self._vad
         pre: deque[np.ndarray] = deque(maxlen=self._pre_frames)
         utterance: list[np.ndarray] = []
-        capturing = False
+        mode = "watching"
         quiet = 0
         for frame in self._frames(self._stop):
-            if not capturing and self._stop.is_set():
+            if mode == "watching" and self._stop.is_set():
                 return None
-            if self._blocked() or self._paused:
-                if capturing and self._blocked():
-                    return None                       # PC locked mid-sentence: drop it
-                if not capturing:
-                    pre.clear()
-                    self.gate.reset()
-                    continue
+            if self._blocked():                       # PC locked / muted: drop anything half-heard
+                if mode == "capturing":
+                    return None
+                utterance, mode = [], "watching"
+                self._reset(pre)
+                continue
+            if self._paused and mode != "capturing":
+                self._reset(pre)
+                mode = "watching"
+                continue
             p = prob(frame)
-            if not capturing:
+            if mode == "watching":
                 pre.append(frame)
                 rms = float(np.sqrt(np.mean(frame ** 2)))
                 if self.gate.update(rms, self._reference(), p):
-                    capturing = True
-                    utterance = list(pre)
-                    print("[Barge-in] You spoke — stopping to listen.")
-                    self._on_interrupt()
+                    mode, utterance, quiet = "probing", list(pre), 0
                 continue
             utterance.append(frame)
             quiet = quiet + 1 if p < 0.35 else 0
+            if mode == "probing":
+                if len(utterance) - self._pre_frames >= self._probe_frames or quiet >= self._end_frames:
+                    if self._is_you(utterance):
+                        print("[Barge-in] You spoke — stopping to listen.")
+                        self._on_interrupt()
+                        mode = "capturing"
+                        if quiet >= self._end_frames:
+                            break                     # a short sentence, already finished
+                    else:
+                        utterance, mode = [], "watching"
+                        self._reset(pre)
+                        if self._stop.is_set():
+                            return None
+                continue
             if quiet >= self._end_frames or len(utterance) >= self._max_frames:
                 break
-        if not capturing:
+        if mode != "capturing":
             return None
         return np.concatenate(utterance).astype(np.float32)
+
+    def _reset(self, pre: deque) -> None:
+        pre.clear()
+        self.gate.reset()

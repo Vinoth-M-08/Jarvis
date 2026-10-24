@@ -74,6 +74,9 @@ def test_time_and_date_answered_directly(router):
     ("What do you need from me?", "apply_status", None),
     ("Hey, can you mute yourself?", "mute", True),                       # failed on the 23rd
     ("Okay Jarvis, please mute yourself.", "mute", True),
+    ("Maybe, can you mute yourself for now?", "mute", True),             # failed on the 24th
+    ("So, actually, could you please go silent for a while.", "mute", True),
+    ("Can you unmute yourself now, thanks", "mute", False),
     ("Jarvis, ask me your questions", "apply_questions", None),
     ("submit my applications", "apply_submit", None),
     ("send the ready applications now", "apply_submit", None),
