@@ -114,3 +114,19 @@ def test_own_voice_counts_while_speaking_and_just_after(monkeypatch):
     assert tts.own_voice_audible(tail_s=0.4)        # echo still in the room
     clock[0] += 0.5
     assert not tts.own_voice_audible(tail_s=0.4)
+
+
+def test_playback_level_follows_what_is_playing(monkeypatch):
+    import numpy as np
+    from jarvis import tts
+    clock = [100.0]
+    monkeypatch.setattr(tts.time, "time", lambda: clock[0])
+    audio = np.concatenate([np.full(24000, 0.2, np.float32), np.zeros(24000, np.float32)])
+    tts._now_playing(audio)
+    clock[0] = 100.5
+    assert abs(tts.playback_level() - 0.2) < 1e-3   # loud part playing
+    clock[0] = 101.6
+    assert tts.playback_level() == 0.0               # silent part
+    clock[0] = 103.0
+    assert tts.playback_level() == 0.0               # finished
+    tts._playing["audio"] = None

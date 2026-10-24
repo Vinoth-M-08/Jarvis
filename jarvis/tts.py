@@ -108,7 +108,35 @@ def stop_speaking() -> None:
     """Interrupt current speech playback — instant."""
     _interrupt.set()
     sd.stop()
+    _playing["audio"] = None
     _done_speaking()
+
+
+# What's coming out of the speakers right now — barge-in compares the mic against it, so Jarvis's
+# own voice (the echo) isn't taken for you talking over it.
+_playing: dict = {"audio": None, "start": 0.0, "rate": 24000}
+
+
+def _now_playing(audio: np.ndarray, rate: int = 24000) -> None:
+    _playing.update(audio=audio, start=time.time(), rate=rate)
+
+
+def playback_level(window_s: float = 0.3) -> float:
+    """Loudest 30 ms of what was played in the last window_s (0 if nothing): the echo the mic may hear."""
+    audio = _playing["audio"]
+    if audio is None:
+        return 0.0
+    rate = _playing["rate"]
+    pos = int((time.time() - _playing["start"]) * rate)
+    lo, hi = max(0, pos - int(window_s * rate)), min(len(audio), pos + int(0.03 * rate))
+    if hi <= lo:
+        return 0.0
+    seg = np.asarray(audio[lo:hi], dtype=np.float32)
+    chunk = int(0.03 * rate)
+    n = len(seg) // chunk
+    if n == 0:
+        return float(np.sqrt(np.mean(seg ** 2)))
+    return float(np.sqrt(np.mean(seg[:n * chunk].reshape(n, chunk) ** 2, axis=1)).max())
 
 
 def _wait_or_interrupt() -> bool:
@@ -129,6 +157,7 @@ def speak(text: str) -> None:
         return
     audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767
     _speaking.set()
+    _now_playing(audio)
     sd.play(audio, samplerate=24000)
     _wait_or_interrupt()
     _done_speaking()
@@ -187,6 +216,7 @@ def prepare_phrases(*phrases: str) -> None:
 
 
 def _play(audio: np.ndarray) -> None:
+    _now_playing(audio)
     sd.play(audio, samplerate=24000)
     _wait_or_interrupt()
 

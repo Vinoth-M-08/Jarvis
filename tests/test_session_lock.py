@@ -18,7 +18,18 @@ def test_guard_reports_lock_and_unlock_once_each():
     assert g.locked and events == ["lock"]
     state[0] = False
     g.poll()
+    assert g.locked                            # one clear check isn't enough
+    g.poll()
     assert not g.locked and events == ["lock", "unlock"]
+
+
+def test_a_flicker_on_the_lock_screen_does_not_unlock():
+    """24 Oct: the desktop check said "unlocked" for a moment while the lock screen was up."""
+    seq = iter([True, False, True, True, False, True])
+    g = LockGuard(check=lambda: next(seq))
+    for _ in range(6):
+        g.poll()
+        assert g.locked
 
 
 def test_wait_unlocked_blocks_until_unlock():
@@ -29,7 +40,7 @@ def test_wait_unlocked_blocks_until_unlock():
     threading.Thread(target=lambda: (g.wait_unlocked(), released.set()), daemon=True).start()
     assert not released.wait(0.2)              # still locked: the voice loop waits here
     state[0] = False
-    g.poll()
+    g.poll(); g.poll()
     assert released.wait(2)
 
 

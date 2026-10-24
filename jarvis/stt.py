@@ -122,6 +122,17 @@ def _vad_prob_fn():
     return lambda frame: float(_vad.predict(frame * 32767, frame_size=VAD_FRAME))
 
 
+def separate_vad_prob():
+    """A speech-probability function with its own Silero state, for a second listener running alongside
+    _listen (barge-in). Falls back to loudness like _vad_prob_fn."""
+    try:
+        from openwakeword.vad import VAD
+        vad = VAD()
+        return lambda frame: float(vad.predict(frame * 32767, frame_size=VAD_FRAME))
+    except Exception:
+        return lambda frame: 1.0 if float(np.sqrt(np.mean(frame ** 2))) >= SPEECH_RMS else 0.0
+
+
 def collect_utterance(frames, speech_prob, frame_s: float = VAD_FRAME / 16000,
                       end_silence_s: float = 0.7, start_timeout_s: float = 8.0, max_seconds: float = 30,
                       threshold: float = 0.5, pre_roll_s: float = 0.3, should_stop=lambda: False,

@@ -185,3 +185,22 @@ def test_multi_step_marks_work_for_claude_in_local_mode():
     for t in ["set a timer for 2 minutes", "take a screenshot", "what's the weather in chennai",
               "open youtube", "how are you", "what is a black hole"]:
         assert not multi(t), t
+
+
+def test_actions_need_tools_and_chat_does_not():
+    tools = lambda t: rules_fallback.decide(t).needs_tools
+    for t in ["I need you to open LMS project", "open notepad", "set a timer for 2 minutes", "lock my computer",
+              "search for flights to delhi", "take a screenshot"]:
+        assert tools(t), t
+    for t in ["how are you", "what is a black hole", "tell me a joke", "who wrote hamlet"]:
+        assert not tools(t), t
+
+
+def test_local_brain_promising_instead_of_acting_is_caught():
+    for reply in ["I'll open the LMS project for you. Let me locate it on the desktop.",
+                  "I'll do that. Let me check the JobOps dashboard to see what needs to be done next.",
+                  "Sure, opening Chrome now.", "I will search for that."]:
+        assert rules_fallback.promises_action(reply), reply
+    for reply in ["A black hole is a region of spacetime.", "I'm doing well, thanks!",
+                  "Let me know if you need anything else.", "I'll be here if you need me."]:
+        assert not rules_fallback.promises_action(reply), reply

@@ -21,6 +21,12 @@ _CHAT_INTENTS = {"question"}   # (no intent at all = small talk, also chat)
 # ("open new tab" -> opened Chrome; "open Notepad and type hello" -> tried to focus it first).
 _SCREEN_WORK = re.compile(r"\b(?:type|typing|click|press|scroll|drag|select|fill|tabs?|play|playing|navigate|"
                           r"log ?in|sign ?in|compose|reply|inbox|mail|email|message|checkout)\b")
+# An order, after any "can you / please / I need you to": something to do, not something to chat about.
+_COMMAND = re.compile(r"^(?:(?:hey|ok(?:ay)?|so|now|jarvis)[,!.]?\s+)*(?:please\s+|(?:can|could|would) you\s+(?:please\s+)?|"
+                      r"i (?:need|want) you to\s+|go ahead and\s+)?"
+                      r"(?:take|show|check|find|start|make|create|download|install|move|put|get|record|turn|enable|"
+                      r"disable|close|minimi[sz]e|maximi[sz]e|restart|shut|run|play|pause|copy|paste|press|"
+                      r"pull up|bring up|navigate|visit|read|fetch|look up|look for)\b")
 _QUESTION = re.compile(r"^(?:what|who|why|how|when|where|which|explain|define|describe|tell me|is|are|can|does|do)\b")
 
 _DESTRUCTIVE = re.compile(r"\b(?:delete|remove|erase|wipe|overwrite|replace|move|rename|uninstall|clear|empty|purge|kill)\b")
@@ -33,6 +39,19 @@ _VAGUE_OBJECT = re.compile(r"\b(?:it|that|this|them|those|these|stuff|things|old
 _CONCRETE = re.compile(r"[a-z]:[\\/]|\.\w{2,4}\b|\b(?:downloads|desktop|documents|pictures|music|videos)\b|\b\w+ folder\b")
 
 
+# The local brain saying it will do something instead of doing it ("I'll open the LMS project for
+# you. Let me locate it on the desktop." — and no tool call): Claude does it then.
+_PROMISE = re.compile(r"\b(?:i'll|i will|i'm going to|i am going to|let me)\s+(?:now\s+|quickly\s+|just\s+|go\s+ahead\s+and\s+)?"
+                      r"(?:open|check|look|find|search|locate|launch|start|go|navigate|click|type|get|take|play|"
+                      r"close|switch|show|pull|bring|run|send|read|scroll|fetch|install|create|set)\b|"
+                      r"^(?:sure[,!.]?\s+|okay[,!.]?\s+|alright[,!.]?\s+)?(?:opening|launching|checking|searching)\b",
+                      re.IGNORECASE)
+
+
+def promises_action(reply: str) -> bool:
+    return bool(_PROMISE.search(reply.strip()))
+
+
 def decide(text: str, recent_turn: bool = False, local_for_simple: bool = False,
            claude_complexity: int = 5, unclear_threshold: float = 0.7) -> Decision:
     t = text.lower().strip()
@@ -43,6 +62,7 @@ def decide(text: str, recent_turn: bool = False, local_for_simple: bool = False,
         intents = ["question"]
     d.intents = intents
     d.intent = intents[0] if intents else "other"
+    d.command = bool(_COMMAND.match(t))
 
     risk = 2
     if _DESTRUCTIVE.search(t):

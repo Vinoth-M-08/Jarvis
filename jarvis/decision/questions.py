@@ -61,7 +61,13 @@ class Decision:
     needs_plan: float = 0.0
     clarify_question: str = ""
     multi_step: bool = False   # several actions, or work on the screen (type/click/tabs...): Claude's job in local mode
+    command: bool = False      # starts like an order ("take a screenshot", "show me my downloads")
     source: str = "rules"      # "rules" | "jev"
+
+    @property
+    def needs_tools(self) -> bool:
+        """Anything but plain chat / questions: something has to be done on the PC."""
+        return self.command or bool(set(self.intents or [self.intent]) - {"question", "other"})
 
     def tool_names(self) -> set[str] | None:
         """Tools for this request; None = all."""

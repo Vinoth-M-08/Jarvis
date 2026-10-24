@@ -31,6 +31,9 @@ from jarvis.apply.service import ApplyService, END_WORDS, SKIP_WORDS, TYPE_IT, f
 from jarvis.conversation import (after_name, is_filler, is_goodbye, is_sleep_command, is_wake_only,
                                  mentions_name, strip_wake_words)
 from jarvis.tts import speak, is_speaking, stop_speaking, SpeechStream, prepare_phrases, own_voice_audible
+from jarvis.tts import playback_level
+from jarvis.barge_in import BargeIn
+from jarvis.overlay import Overlay
 from jarvis.session_lock import guard as lock_guard
 from jarvis.context import ContextManager
 from jarvis.memory import Memory
@@ -52,6 +55,7 @@ from jarvis.gpu import free_vram_gb, gpu_stats
 from jarvis.notify import Notifier
 from jarvis.tools import system as system_tools
 from jarvis.decision.decide import DecisionMaker
+from jarvis.decision.rules_fallback import promises_action
 from jarvis.judge import Judge, PROPOSE_PLAN_SCHEMA
 from jarvis.tools.windows_mcp import PREFIX as WIN_PREFIX, WindowsMCP
 from jarvis.tools.browser.session import BrowserSession
@@ -282,6 +286,7 @@ _voice_cfg = _startup_cfg.get("voice") or {}
 _WAKE_REPLY = str(_voice_cfg.get("wake_reply", "chime"))            # chime | yes
 _END_SILENCE_S = float(_voice_cfg.get("end_silence_ms", 700)) / 1000
 _FIRST_LISTEN_S = float(_voice_cfg.get("first_listen_seconds", 6))
+_BARGE_IN = bool(_voice_cfg.get("barge_in", True))   # talk over Jarvis: it stops and listens
 _ALWAYS_LISTENING = bool(_voice_cfg.get("always_listening", False))   # no wake word at all
 _CONVERSATION_IDLE_S = float(_voice_cfg.get("conversation_idle_seconds",
                                             _voice_cfg.get("follow_up_seconds", 300)))   # 0 = one request per wake word
@@ -296,6 +301,7 @@ def _listen(start_timeout_s: float, max_seconds: float = 30, raise_on_abort: boo
         return ""
     from jarvis.wake import pause_wake_mic, resume_wake_mic
     pause_wake_mic()   # no wait needed: Windows lets the recorder open the mic alongside it
+    barge_in.pause()   # a yes/no answer recorded here isn't you talking over Jarvis
     global _last_speech_end
     stats: dict = {}
     try:
@@ -305,6 +311,7 @@ def _listen(start_timeout_s: float, max_seconds: float = 30, raise_on_abort: boo
         _last_speech_end = time.time() - _END_SILENCE_S   # recording stops end_silence after the last word
     finally:
         resume_wake_mic()
+        barge_in.resume()
     if raise_on_abort:
         _check_abort()
     if audio.size == 0:
@@ -483,6 +490,12 @@ CLAUDE_MODELS = {
 def _claude_provider_key(cfg: dict) -> str | None:
     providers = cfg.get("llm", {}).get("providers", {})
     return next((k for k, p in providers.items() if p.get("type") == "claude_agent"), None)
+
+
+def _claude_available_key() -> str | None:
+    """Claude's provider key if it's set up and today's budget isn't spent (local mode hands it actions)."""
+    key = _claude_provider_key(_load_config())
+    return key if key and usage_tracker.requests_on() < input_gate.daily_claude_budget else None
 
 
 def get_claude_model() -> dict:
@@ -876,10 +889,44 @@ def handle_wake() -> None:
         print("[Jarvis] Listening for wake word...")
 
 
+# What you said over Jarvis's reply (barge-in): the next request, taken before listening again.
+_interruptions: list[tuple[str, float]] = []
+
+
+def _on_barge_in() -> None:
+    stop_speaking()
+    _broadcast({"type": "status", "message": "Listening..."})
+
+
+def _on_barge_in_heard(text: str) -> None:
+    request = strip_wake_words(text)
+    if lock_guard.locked or not request or is_filler(request):
+        print(f"[Jarvis] (ignored {text!r})")
+        return
+    _interruptions.append((request, time.time()))
+    if _busy_count > 0:
+        abort_all()        # still working on the old request: drop it, yours comes first
+
+
+def _next_interruption() -> tuple[str, float] | None:
+    return _interruptions.pop(0) if _interruptions else None
+
+
+# Floating Jarvis at the top of the screen; the dashboard tells it when it's in front (web.py).
+overlay = Overlay(speaking=is_speaking, level=playback_level, locked=lambda: lock_guard.locked)
+
+barge_in = BargeIn(on_interrupt=_on_barge_in, on_heard=_on_barge_in_heard, transcribe=transcribe_audio,
+                   reference=playback_level, vad_factory=stt.separate_vad_prob,
+                   blocked=lambda: lock_guard.locked or is_muted())
+
+
 def _answer_aloud(user_text: str, speech_end: float) -> None:
-    """Handle one spoken request and speak the reply while it is written (blocks until spoken)."""
+    """Handle one spoken request and speak the reply while it is written (blocks until spoken).
+    Talking over it stops the reply; what you said waits in _interruptions."""
     t1 = time.time()
     stream = _new_speech_stream()
+    if _BARGE_IN and stream is not None:
+        barge_in.start()
     try:
         response_text = _process_request(user_text, source="voice", stream=stream)
         print(f"[Jarvis] {response_text}   (reply written in {time.time() - t1:.1f}s)")
@@ -887,10 +934,13 @@ def _answer_aloud(user_text: str, speech_end: float) -> None:
     finally:
         if stream is not None:
             stream.finish()   # returns at once if Esc stopped it
+        barge_in.finish()     # waits if you're mid-sentence
     if stream is not None and stream.first_audio_at:
         print(f"[Timing] You stopped talking -> Jarvis started speaking: "
               f"{stream.first_audio_at - speech_end:.1f}s")
     global _voice_session
+    if _interruptions:
+        _voice_session = None          # you said something else: that comes first
     if _voice_session == "apply_questions":
         _voice_session = None
         _apply_question_session()
@@ -1007,8 +1057,13 @@ def always_listen() -> None:
         _abort.clear()
         try:
             _broadcast({"type": "status", "message": "Sleeping." if asleep else "Listening..."})
-            heard = _listen(start_timeout_s=60, explain=False)
-            speech_end = _last_speech_end
+            interrupted = _next_interruption()
+            if interrupted:
+                heard, speech_end = interrupted
+                asleep = False
+            else:
+                heard = _listen(start_timeout_s=60, explain=False)
+                speech_end = _last_speech_end
             if not heard:
                 continue
             if asleep:
@@ -1035,7 +1090,7 @@ def always_listen() -> None:
                 continue   # nothing is running to stop
             _answer_aloud(user_text, speech_end)
         except _Aborted:
-            print("[Jarvis] Stopped.")
+            print("[Jarvis] Stopped." + (" Listening to you." if _interruptions else ""))
         except Exception as e:
             import traceback
             print(f"[ERROR] {e}")
@@ -1064,9 +1119,13 @@ def _handle_wake_inner() -> None:
         if not conversation:
             print("[Jarvis] Listening...")
         t0 = time.time()
-        user_text = _listen(start_timeout_s=_CONVERSATION_IDLE_S if conversation else _FIRST_LISTEN_S,
-                            explain=not conversation)
-        speech_end = _last_speech_end   # this request's own (a yes/no question mid-task would overwrite it)
+        interrupted = _next_interruption()
+        if interrupted:
+            user_text, speech_end = interrupted
+        else:
+            user_text = _listen(start_timeout_s=_CONVERSATION_IDLE_S if conversation else _FIRST_LISTEN_S,
+                                explain=not conversation)
+            speech_end = _last_speech_end   # this request's own (a yes/no question mid-task would overwrite it)
         if not user_text:
             if conversation:
                 print(f"[Jarvis] Conversation closed after {_CONVERSATION_IDLE_S / 60:.0f} min of quiet. "
@@ -1093,8 +1152,14 @@ def _handle_wake_inner() -> None:
             print("[Jarvis] Conversation closed. Say 'Hey Jarvis' to start again.")
             return
 
-        _answer_aloud(user_text, speech_end)
-        _check_abort()
+        try:
+            _answer_aloud(user_text, speech_end)
+            _check_abort()
+        except _Aborted:
+            if not _interruptions:
+                raise
+            _abort.clear()                 # you talked over it: answer that instead
+            print("[Jarvis] Stopped. Listening to you.")
 
         if _CONVERSATION_IDLE_S <= 0:
             return
@@ -1378,14 +1443,16 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
     brain_spoke = False   # the brain's own words went into the stream while it wrote them
     on_text = stream.feed if stream is not None else None
     local_mode = not uses_claude
-    if local_mode and decision.multi_step:
-        # Local mode: chat and one-step actions stay on the local brain; multi-step / on-screen
-        # work goes to Claude, which does it reliably (the 4B model fumbles it).
-        claude_key = _claude_provider_key(_load_config())
-        if claude_key and usage_tracker.requests_on() < input_gate.daily_claude_budget:
+    if local_mode and (decision.multi_step or decision.needs_tools):
+        # Local mode: chat stays on the local brain; anything to DO on the PC goes to Claude, which
+        # does it (the 4B model said "Let me locate it on the desktop" and called no tool at all).
+        claude_key = _claude_available_key()
+        if claude_key:
             provider = get_providers()[claude_key]
             uses_claude = True
-            print("[Brain] Multi-step task: Claude takes this one (local mode).")
+            print("[Brain] Action: Claude takes this one (local mode).")
+    elif local_mode:
+        turn.tool_hint = set()   # plain chat on the local brain: no tools, quicker first word
     use_local = gate.use_local or decision.route == "local"
     if use_local and not gate.use_local and uses_claude and not local_backup.ready()[0]:
         use_local = False   # fast mode, but the GPU has no room for the local brain: Claude answers
@@ -1446,6 +1513,20 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
         # The local brain is stateless, so it needs this history; the Claude session keeps its own.
         context.add("user", user_text)
         context.add("assistant", response_text)
+
+        claude_key = (_claude_available_key() if not uses_claude and turn.tool_calls == 0
+                      and promises_action(response_text) else None)
+        if claude_key:
+            # It said "I'll open it" / "Let me check" and did nothing: Claude actually does it.
+            print("[Brain] The local brain only said it would act — Claude does it.")
+            try:
+                response_text = _call_claude_provider(get_providers()[claude_key], user_text, facts, turn, stream)
+                brain_used = get_providers()[claude_key].get("model", "claude")
+                brain_spoke = stream is not None and stream.fed_any
+            except _Aborted:
+                raise
+            except Exception as e:
+                print(f"[WARN] Claude couldn't take over ({e})")
 
     if _answer_cache_on and turn.tool_calls == 0 and not turn.stopped:
         answer_cache.put(user_text, response_text)
@@ -1555,6 +1636,9 @@ def main() -> None:
     threading.Thread(target=_preload_speech_to_text, name="stt-preload", daemon=True).start()
     lock_guard.on(_on_pc_locked, _on_pc_unlocked)
     lock_guard.start()                    # Windows locked -> no listening, speaking or acting
+    if (_startup_cfg.get("overlay") or {}).get("enabled", True):
+        register_event_listener(overlay.on_event)
+        overlay.start()                   # floating Jarvis under the camera while you're off the dashboard
 
     if _desktop_cfg.get("backend", "windows_mcp") == "windows_mcp":
         print("[Windows-MCP] Starting (the first run downloads it, up to ~2 min)...")

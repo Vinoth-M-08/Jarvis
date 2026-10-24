@@ -316,6 +316,10 @@ async def websocket_endpoint(ws: WebSocket):
                 _tasks.add(task)
                 task.add_done_callback(_tasks.discard)
 
+            elif msg.get("type") == "focus":
+                from jarvis.main import overlay
+                overlay.dashboard_focus(id(ws), bool(msg.get("focused")))
+
             elif msg.get("type") == "interrupt":
                 from jarvis.main import abort_all
                 abort_all()
@@ -332,6 +336,8 @@ async def websocket_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         if ws in _clients:
             _clients.remove(ws)
+        from jarvis.main import overlay
+        overlay.dashboard_focus(id(ws), None)
 
 
 _tasks: set[asyncio.Task] = set()  # keep references so running chat tasks aren't garbage-collected
