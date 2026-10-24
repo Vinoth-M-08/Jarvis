@@ -20,6 +20,8 @@ if errorlevel 1 (
 )
 
 set PYTHONIOENCODING=utf-8
+echo Starting Jarvis - loading the speech and AI libraries takes about a minute...
+echo (Ctrl+C stops Jarvis; if Windows asks "Terminate batch job", answer Y.)
 ".venv\Scripts\python.exe" -m jarvis.main
 if errorlevel 1 (
     echo.

@@ -2,6 +2,7 @@ from __future__ import annotations
 import sys
 
 if __name__ == "__main__":
+    print("[Jarvis] Loading... (speech and AI libraries, about a minute)", flush=True)
     # Started as `python -m jarvis.main`: make `from jarvis.main import ...` (web.py,
     # wake.py) return THIS module. Otherwise Python loads a second copy with its own
     # abort flag, mute flag, HUD listeners and confirm broker — voice turns then get
