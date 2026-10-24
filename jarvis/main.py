@@ -31,6 +31,7 @@ from jarvis.apply.service import ApplyService, END_WORDS, SKIP_WORDS, TYPE_IT, f
 from jarvis.conversation import (after_name, is_filler, is_goodbye, is_sleep_command, is_wake_only,
                                  mentions_name, strip_wake_words)
 from jarvis.tts import speak, is_speaking, stop_speaking, SpeechStream, prepare_phrases, own_voice_audible
+from jarvis.session_lock import guard as lock_guard
 from jarvis.context import ContextManager
 from jarvis.memory import Memory
 from jarvis.tools.router import TOOL_SCHEMAS, dispatch
@@ -138,9 +139,21 @@ def toggle_mute() -> None:
 
 
 def _speak_if_unmuted(text: str) -> None:
-    """Speak text only if not muted."""
-    if not _muted.is_set():
+    """Speak text only if not muted — and never while the PC is locked (nobody to tell it to)."""
+    if not _muted.is_set() and not lock_guard.locked:
         speak(text)
+
+
+def _on_pc_locked() -> None:
+    """Windows locked: stop everything. No listening, speaking or acting until you unlock."""
+    print("[Security] PC locked — not listening, speaking or acting until you unlock it.")
+    abort_all()                       # stops speech, the request in progress and any recording
+    _broadcast({"type": "status", "message": "Locked — not listening."})
+
+
+def _on_pc_unlocked() -> None:
+    print("[Security] PC unlocked — listening again.")
+    _broadcast({"type": "status", "message": "Ready."})
 
 
 # --- OpenAI client cache (keyed by base_url) ---
@@ -174,7 +187,8 @@ local_backup = LocalBackup(
     min_free_vram_gb=float(_brain_cfg.get("min_free_vram_gb_for_backup", 4)),
     free_vram_gb=free_vram_gb,
 )
-notifier = Notifier(speak=_speak_if_unmuted, broadcast=_broadcast, is_busy=lambda: is_busy())
+notifier = Notifier(speak=_speak_if_unmuted, broadcast=_broadcast,
+                    is_busy=lambda: is_busy() or lock_guard.locked)   # announcements wait while locked
 # Auto-apply (docs/AUTO_APPLY.md): dashboard + voice. Results are announced at the next pause.
 _apply_cfg = _startup_cfg.get("apply") or {}
 _APPLY_VOICE_APPROVAL = bool(_apply_cfg.get("voice_approval", True))
@@ -276,14 +290,18 @@ _last_speech_end = 0.0
 
 def _listen(start_timeout_s: float, max_seconds: float = 30, raise_on_abort: bool = True,
             explain: bool = True) -> str:
-    """Record one utterance and transcribe it. '' if nobody spoke (with the reason printed if explain)."""
+    """Record one utterance and transcribe it. '' if nobody spoke (with the reason printed if explain).
+    Never records while the PC is locked."""
+    if lock_guard.locked:
+        return ""
     from jarvis.wake import pause_wake_mic, resume_wake_mic
     pause_wake_mic()   # no wait needed: Windows lets the recorder open the mic alongside it
     global _last_speech_end
     stats: dict = {}
     try:
         audio = record_utterance(end_silence_s=_END_SILENCE_S, start_timeout_s=start_timeout_s,
-                                 max_seconds=max_seconds, stats=stats, ignore=own_voice_audible)
+                                 max_seconds=max_seconds, stats=stats,
+                                 ignore=lambda: own_voice_audible() or lock_guard.locked)
         _last_speech_end = time.time() - _END_SILENCE_S   # recording stops end_silence after the last word
     finally:
         resume_wake_mic()
@@ -826,6 +844,8 @@ def _dispatch(name: str, args: dict) -> str:
 
 def _exec_tool_with_retry(turn: TurnContext, name: str, args: dict) -> str:
     """Execute a tool through the gatekeeper, retry once on failure (never on a block)."""
+    if lock_guard.locked:
+        return "BLOCKED: the PC is locked — nothing runs until the owner unlocks it. Do not retry."
     if name == "propose_plan":
         return judge.propose(turn, args)
     result = gatekeeper.run(turn, name, args, _dispatch)
@@ -837,6 +857,8 @@ def _exec_tool_with_retry(turn: TurnContext, name: str, args: dict) -> str:
 
 def handle_wake() -> None:
     """Called when wake word is detected. Full pipeline: listen → think → speak."""
+    if lock_guard.locked:
+        return
     _abort.clear()
     try:
         _handle_wake_inner()
@@ -980,6 +1002,8 @@ def always_listen() -> None:
     print("[Jarvis] Always listening — just talk. Say 'stop listening' to pause; 'Jarvis' wakes me again.")
     asleep = False
     while True:
+        if lock_guard.locked:
+            lock_guard.wait_unlocked()            # locked: no mic, nothing at all, until you unlock
         _abort.clear()
         try:
             _broadcast({"type": "status", "message": "Sleeping." if asleep else "Listening..."})
@@ -1286,8 +1310,8 @@ def _process_request(user_text: str, source: str = "typed", stream: SpeechStream
 
 
 def _new_speech_stream() -> SpeechStream | None:
-    """A stream to speak the reply into, or None while muted."""
-    return None if is_muted() else SpeechStream()
+    """A stream to speak the reply into, or None while muted or the PC is locked."""
+    return None if is_muted() or lock_guard.locked else SpeechStream()
 
 
 def _process_request_inner(user_text: str, source: str = "typed", stream: SpeechStream | None = None) -> str:
@@ -1297,6 +1321,8 @@ def _process_request_inner(user_text: str, source: str = "typed", stream: Speech
     only voice and typed turns may run acting tools.
     """
     _check_abort()
+    if lock_guard.locked:
+        return "The PC is locked, so I'm not doing anything until you unlock it."
     turn = gatekeeper.new_turn(source)
     _play_beep()
     _broadcast({"type": "user", "text": user_text})
@@ -1527,6 +1553,8 @@ def main() -> None:
     notifier.start()
     threading.Thread(target=_tidy_memory, name="tidy-memory", daemon=True).start()
     threading.Thread(target=_preload_speech_to_text, name="stt-preload", daemon=True).start()
+    lock_guard.on(_on_pc_locked, _on_pc_unlocked)
+    lock_guard.start()                    # Windows locked -> no listening, speaking or acting
 
     if _desktop_cfg.get("backend", "windows_mcp") == "windows_mcp":
         print("[Windows-MCP] Starting (the first run downloads it, up to ~2 min)...")

@@ -104,6 +104,9 @@ def listen_for_wake_word(callback) -> None:
             from jarvis.tts import own_voice_audible
             if own_voice_audible():
                 continue
+            from jarvis.session_lock import guard
+            if guard.locked:                  # PC locked: nobody gets to command Jarvis
+                continue
 
             if _busy.locked():
                 # BUSY: wake word = stop everything

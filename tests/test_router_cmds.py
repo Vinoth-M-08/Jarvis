@@ -72,6 +72,8 @@ def test_time_and_date_answered_directly(router):
     ("switch back to cloud", "brain", "claude"),
     ("switch from ollama to claude", "brain", "claude"),
     ("What do you need from me?", "apply_status", None),
+    ("Hey, can you mute yourself?", "mute", True),                       # failed on the 23rd
+    ("Okay Jarvis, please mute yourself.", "mute", True),
     ("Jarvis, ask me your questions", "apply_questions", None),
     ("submit my applications", "apply_submit", None),
     ("send the ready applications now", "apply_submit", None),

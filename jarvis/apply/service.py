@@ -84,6 +84,11 @@ def find_resume_files(name: str, roots: list[Path] | None = None, limit: int = 5
     return [p for _, p in found[:limit]]
 
 
+def _pc_locked() -> bool:
+    from jarvis.session_lock import guard
+    return guard.locked
+
+
 def _stamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -121,7 +126,8 @@ class ApplyService:
             from jarvis.apply.greenhouse_form import GreenhouseForm
             form_factory = lambda: GreenhouseForm(self.store.root / "chrome-profile", headless=headless)
         self.submitter = Submitter(self.store, form_factory, self._recheck, self._on_change, self._notify,
-                                   audit or (lambda tool, args, why: None), daily_limit, delay_s)
+                                   audit or (lambda tool, args, why: None), daily_limit, delay_s,
+                                   paused=lambda: _pc_locked())
 
     # ─── approve / preview / submit ───
     def ready_ids(self) -> list[str]:

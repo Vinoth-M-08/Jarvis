@@ -27,7 +27,8 @@ class Submitter:
     def __init__(self, store: ApplyStore, form_factory: Callable[[], object], recheck: Callable[[dict], dict],
                  on_change: Callable[[], None], notify: Callable[[str], None],
                  audit: Callable[[str, dict, str], None] = lambda tool, args, why: None,
-                 daily_limit: int = 20, delay_s: tuple[float, float] = (20, 60)):
+                 daily_limit: int = 20, delay_s: tuple[float, float] = (20, 60),
+                 paused: Callable[[], bool] = lambda: False):
         self.store = store
         self._form_factory = form_factory
         self._recheck = recheck
@@ -36,6 +37,7 @@ class Submitter:
         self._audit = audit
         self.daily_limit = daily_limit
         self.delay_s = delay_s
+        self._paused = paused              # PC locked: nothing is sent until you're back
         self._tasks: queue.Queue = queue.Queue()
         self._form = None
         self._open_pages: list = []
@@ -105,6 +107,8 @@ class Submitter:
     def _submit_all(self, ids: list[str]) -> None:
         done: dict[str, list[str]] = {"submitted": [], "handoff": [], "error": [], "parked": [], "duplicate": []}
         for n, app_id in enumerate(ids):
+            while self._paused():
+                time.sleep(2)
             if self.submitted_today() >= self.daily_limit:
                 left = len(ids) - n
                 self._notify(f"Daily limit of {self.daily_limit} reached — {left} approved application"

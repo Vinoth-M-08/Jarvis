@@ -13,7 +13,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
 
-_FILLER = re.compile(r"^(?:hey\s+)?(?:jarvis[,\s]+)?(?:please\s+|can you\s+|could you\s+)?", re.IGNORECASE)
+# "Hey, can you mute yourself?" / "Hey Jarvis, please ..." — punctuation after hey/Jarvis used to stop
+# the command from being recognised (it went to the brain, which said it couldn't mute itself).
+_FILLER = re.compile(r"^(?:(?:hey|hi|ok|okay)[,!.]?\s+)?(?:jarvis[,!.]?\s+)?(?:please\s+|can you\s+|could you\s+)?",
+                     re.IGNORECASE)
 _TRAILING = re.compile(r"[\s.!?]*(?:please)?[\s.!?]*$", re.IGNORECASE)
 
 
