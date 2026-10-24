@@ -97,7 +97,7 @@ def test_utterance_ends_after_short_silence():
     audio = collect_utterance(frames(), _prob, end_silence_s=0.6, pre_roll_s=0.3)
     speech_end = 20 + 40
     assert len(consumed) <= speech_end + 21               # stopped ~0.6 s after speech, not 2 s+
-    assert audio.size == (10 + 38 + 20) * 480             # 0.3 s lead-in (ends with the 2 start frames) + speech + 0.6 s tail
+    assert audio.size == (10 + 35 + 20) * 480             # 0.3 s lead-in (ends with the 5 start frames) + speech + 0.6 s tail
 
 
 def test_utterance_times_out_when_nobody_speaks():
@@ -110,3 +110,30 @@ def test_single_click_is_not_speech_and_stop_aborts():
     from jarvis.stt import collect_utterance
     assert collect_utterance(iter(_frames("..s......" * 20)), _prob, start_timeout_s=3).size == 0
     assert collect_utterance(iter(_frames("s" * 50)), _prob, should_stop=lambda: True).size == 0
+
+
+def test_knocks_and_short_noises_are_not_speech():
+    from jarvis.stt import collect_utterance
+    stats = {}
+    # 120 ms bursts (a knock, a clap) never start a recording
+    assert collect_utterance(iter(_frames(("ssss" + "." * 20) * 10)), _prob, start_timeout_s=5).size == 0
+    # 210 ms of sound, then quiet: started, but too little speech to be a request
+    audio = collect_utterance(iter(_frames("." * 5 + "s" * 7 + "." * 60)), _prob, end_silence_s=0.6, stats=stats)
+    assert audio.size == 0 and stats["reason"] == "too short to be speech"
+    # a short real word ("yes", 360 ms) still counts
+    assert collect_utterance(iter(_frames("." * 5 + "s" * 12 + "." * 60)), _prob, end_silence_s=0.6).size > 0
+
+
+def _seg(text, no_speech=0.05, logprob=-0.3, ratio=1.4):
+    seg = MagicMock()
+    seg.text, seg.no_speech_prob, seg.avg_logprob, seg.compression_ratio = text, no_speech, logprob, ratio
+    return seg
+
+
+def test_whisper_noise_guesses_are_dropped():
+    from jarvis.stt import _join_speech
+    assert _join_speech([_seg(" open notepad")]) == "open notepad"
+    assert _join_speech([_seg(" Uh...", no_speech=0.9)]) == ""                       # fan / knock
+    assert _join_speech([_seg(" Thank you.", no_speech=0.6, logprob=-1.0)]) == ""   # unsure + likely silence
+    assert _join_speech([_seg(" la la la la la la", ratio=3.1)]) == ""              # made-up repetition
+    assert _join_speech([_seg(" what's the weather"), _seg(" you", no_speech=0.95)]) == "what's the weather"

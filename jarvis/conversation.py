@@ -58,3 +58,17 @@ def is_wake_only(text: str) -> bool:
 def strip_wake_words(text: str) -> str:
     """'Hey Jarvis, what time is it' -> 'what time is it' (said while the conversation is open)."""
     return _WAKE_PREFIX.sub("", text, count=1).strip()
+
+
+_WORD = re.compile(r"[a-z0-9']+")
+
+
+def is_own_echo(heard: str, said: str, share: float = 0.7) -> bool:
+    """Is `heard` mostly Jarvis's own recent words coming back through the mic? ("Sure, boss." /
+    "I still need the dea-" were its own reply, taken as requests on 24 Oct.)"""
+    words = _WORD.findall(heard.lower())
+    if not words or not said:
+        return False
+    spoken = set(_WORD.findall(said.lower()))
+    known = sum(1 for w in words if w in spoken or any(s.startswith(w) for s in spoken if len(w) >= 3))
+    return known / len(words) >= share

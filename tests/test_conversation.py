@@ -29,3 +29,15 @@ def test_always_listening_phrases():
     assert after_name("okay so Jarvis, open Spotify") == "open Spotify"
     assert is_wake_only(after_name("Jarvis, wake up!")) and is_wake_only(after_name("Hey Jarvis"))
     assert not is_wake_only("open spotify")
+
+
+def test_jarvis_own_voice_is_recognised():
+    from jarvis.conversation import is_own_echo
+    said = ("Sure, boss. What should the developer build? Is it the LMS project or something else? "
+            "Boss, I still need the details before I can write the prompt.")
+    assert is_own_echo("Sure, boss.", said)
+    assert is_own_echo("I still need the dea-", said)
+    assert not is_own_echo("No, I was asking what is the current weather in Coimbatore?", said)
+    assert not is_own_echo("open notepad", said)
+    assert not is_own_echo("stop", said)
+    assert not is_own_echo("anything", "")

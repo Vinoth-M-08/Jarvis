@@ -22,7 +22,7 @@ FRAME_S = FRAME / 16000
 
 
 class EchoGate:
-    def __init__(self, margin: float = 2.5, floor: float = 0.015, prob: float = 0.6, need: int = 8, of: int = 12,
+    def __init__(self, margin: float = 3.0, floor: float = 0.02, prob: float = 0.7, need: int = 12, of: int = 16,
                  audible: float = 0.02, min_samples: int = 30):
         self.margin, self.floor, self.prob = margin, floor, prob
         self.need, self.audible, self.min_samples = need, audible, min_samples

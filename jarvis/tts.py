@@ -105,9 +105,10 @@ def own_voice_audible(tail_s: float = 0.4) -> bool:
 
 
 def stop_speaking() -> None:
-    """Interrupt current speech playback — instant."""
+    """Interrupt current speech playback (within 50 ms). Only flags it: the thread that is playing
+    stops its own stream (_wait_or_interrupt). Calling sd.stop() from here, another thread, while
+    the player was starting the next sentence crashed Python (access violation, 24 Oct 13:48)."""
     _interrupt.set()
-    sd.stop()
     _playing["audio"] = None
     _done_speaking()
 
@@ -115,6 +116,22 @@ def stop_speaking() -> None:
 # What's coming out of the speakers right now — barge-in compares the mic against it, so Jarvis's
 # own voice (the echo) isn't taken for you talking over it.
 _playing: dict = {"audio": None, "start": 0.0, "rate": 24000}
+
+
+_said: list[tuple[float, str]] = []      # (time, sentence) Jarvis spoke lately
+
+
+def _note_said(text: str) -> None:
+    now = time.time()
+    _said.append((now, text))
+    while _said and now - _said[0][0] > 60:
+        _said.pop(0)
+
+
+def recently_said(seconds: float = 30) -> str:
+    """What Jarvis said in the last `seconds` (to recognise its own voice coming back through the mic)."""
+    now = time.time()
+    return " ".join(t for at, t in list(_said) if now - at <= seconds)
 
 
 def _now_playing(audio: np.ndarray, rate: int = 24000) -> None:
@@ -139,26 +156,54 @@ def playback_level(window_s: float = 0.3) -> float:
     return float(np.sqrt(np.mean(seg[:n * chunk].reshape(n, chunk) ** 2, axis=1)).max())
 
 
+# sounddevice's play()/stop() share one global stream and aren't thread-safe; speech, chimes and
+# barge-in run on different threads, so every start, stop and check goes through this lock.
+_sd_lock = threading.RLock()
+
+
+def _start_audio(audio: np.ndarray, rate: int = 24000) -> None:
+    with _sd_lock:
+        sd.play(audio, samplerate=rate)
+
+
+def _audio_active() -> bool:
+    with _sd_lock:
+        try:
+            stream = sd.get_stream()
+        except RuntimeError:          # nothing played yet
+            return False
+        return bool(stream and stream.active)
+
+
 def _wait_or_interrupt() -> bool:
     """Poll until audio finishes or interrupt is set. Returns True if interrupted."""
-    while sd.get_stream() and sd.get_stream().active:
+    while _audio_active():
         if _interrupt.is_set():
-            sd.stop()
+            with _sd_lock:
+                sd.stop()
             return True
         _interrupt.wait(0.05)  # 50ms poll
     return _interrupt.is_set()
 
 
+def play_sound(sound: np.ndarray, wait: bool = True) -> None:
+    """A chime or beep (not speech)."""
+    _start_audio(sound)
+    while wait and _audio_active():
+        time.sleep(0.02)
+
+
 def speak(text: str) -> None:
     """Speak text aloud. Can be interrupted via stop_speaking()."""
     _interrupt.clear()
+    _note_said(text)
     audio_bytes = speak_to_bytes(text)
     if not audio_bytes:
         return
     audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767
     _speaking.set()
     _now_playing(audio)
-    sd.play(audio, samplerate=24000)
+    _start_audio(audio)
     _wait_or_interrupt()
     _done_speaking()
 
@@ -217,7 +262,7 @@ def prepare_phrases(*phrases: str) -> None:
 
 def _play(audio: np.ndarray) -> None:
     _now_playing(audio)
-    sd.play(audio, samplerate=24000)
+    _start_audio(audio)
     _wait_or_interrupt()
 
 
@@ -278,6 +323,7 @@ class SpeechStream:
     def _queue(self, part: str) -> None:
         sentence = clean_for_speech(part)
         if sentence:
+            _note_said(sentence)
             self.spoken.append(sentence)
             self._sentences.put(sentence)
 

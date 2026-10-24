@@ -56,20 +56,49 @@ def _get_model(force_cpu=False):
             raise
     return _model
 
+def _num(seg, name: str, default: float) -> float:
+    value = getattr(seg, name, default)
+    return float(value) if isinstance(value, (int, float)) else default
+
+
+def is_real_speech(seg) -> bool:
+    """Whisper's own judgement of a segment. Noise (a fan, a knock, a TV across the room) comes back as
+    "Uh...", "you", "Thank you" with a high no-speech score or a very unsure guess."""
+    no_speech = _num(seg, "no_speech_prob", 0.0)
+    logprob = _num(seg, "avg_logprob", 0.0)
+    if no_speech > 0.8 or (no_speech > 0.5 and logprob < -0.8):
+        return False
+    return logprob > -1.3 and _num(seg, "compression_ratio", 1.0) < 2.4   # very unsure / repeating = made up
+
+
+def _join_speech(segments) -> str:
+    kept, dropped = [], []
+    for seg in segments:
+        (kept if is_real_speech(seg) else dropped).append(seg.text.strip())
+    if any(dropped):
+        print(f"[STT] Not speech, ignored: {' '.join(dropped)!r}")
+    return " ".join(kept).strip()
+
+
+# Silero (inside faster-whisper) cuts out the parts that aren't a voice before Whisper reads them.
+_TRANSCRIBE = dict(beam_size=5, language="en", vad_filter=True,
+                   vad_parameters=dict(threshold=0.5, min_speech_duration_ms=200, speech_pad_ms=300))
+
+
 def transcribe_audio(audio: np.ndarray) -> str:
-    """Transcribe a float32 numpy audio array (16kHz mono) to text."""
+    """Transcribe a float32 numpy audio array (16kHz mono) to text — speech only."""
     try:
         model = _get_model()
-        segments, _ = model.transcribe(audio, beam_size=5, language="en")
-        return " ".join(seg.text.strip() for seg in segments).strip()
+        segments, _ = model.transcribe(audio, **_TRANSCRIBE)
+        return _join_speech(segments)
     except Exception as e:
         # If CUDA worked for loading but fails during inference, retry on CPU
         if _model_device != "cpu":
             print(f"[STT] {_model_device} transcription failed ({e}), reloading on CPU")
             try:
                 model = _get_model(force_cpu=True)
-                segments, _ = model.transcribe(audio, beam_size=5, language="en")
-                return " ".join(seg.text.strip() for seg in segments).strip()
+                segments, _ = model.transcribe(audio, **_TRANSCRIBE)
+                return _join_speech(segments)
             except Exception as e2:
                 print(f"[STT] CPU transcription also failed: {e2}")
                 return ""
@@ -136,15 +165,17 @@ def separate_vad_prob():
 def collect_utterance(frames, speech_prob, frame_s: float = VAD_FRAME / 16000,
                       end_silence_s: float = 0.7, start_timeout_s: float = 8.0, max_seconds: float = 30,
                       threshold: float = 0.5, pre_roll_s: float = 0.3, should_stop=lambda: False,
-                      stats: dict | None = None) -> np.ndarray:
+                      stats: dict | None = None, start_s: float = 0.15, min_speech_s: float = 0.3) -> np.ndarray:
     """Read frames until the speaker has been quiet for end_silence_s after speaking.
 
     Returns the utterance (with pre_roll_s of lead-in), or an empty array if nobody started
-    speaking within start_timeout_s. Speech starts after two speech frames in a row (60 ms),
-    so a click or a cough edge doesn't count. If given, `stats` gets why it stopped and the
+    speaking within start_timeout_s. Speech starts after start_s of speech frames in a row (150 ms)
+    and must add up to min_speech_s (300 ms), so a click, a knock or a cough isn't taken for a voice. If given, `stats` gets why it stopped and the
     loudest level / highest speech score seen (for "didn't catch anything" diagnostics).
     """
     keep_before = max(1, round(pre_roll_s / frame_s))
+    start_frames = max(1, round(start_s / frame_s))
+    speech_frames = 0
     end_frames = max(1, round(end_silence_s / frame_s))
     frames_seen = 0
     recent: list[np.ndarray] = []      # lead-in before speech starts
@@ -166,7 +197,8 @@ def collect_utterance(frames, speech_prob, frame_s: float = VAD_FRAME / 16000,
             recent.append(frame)
             recent = recent[-keep_before:]
             speech_run = speech_run + 1 if p >= threshold else 0
-            if speech_run >= 2:
+            if speech_run >= start_frames:
+                speech_frames = speech_run
                 started = True
                 utterance = list(recent)
             elif frames_seen * frame_s >= start_timeout_s:
@@ -174,6 +206,7 @@ def collect_utterance(frames, speech_prob, frame_s: float = VAD_FRAME / 16000,
                 break
             continue
         utterance.append(frame)
+        speech_frames += p >= threshold
         quiet_run = quiet_run + 1 if p < threshold * 0.7 else 0
         if quiet_run >= end_frames:
             break
@@ -183,6 +216,10 @@ def collect_utterance(frames, speech_prob, frame_s: float = VAD_FRAME / 16000,
     if stats is not None:
         stats.update(reason=reason, max_speech_score=round(max_p, 2), max_level=round(max_rms, 3),
                      seconds=round(frames_seen * frame_s, 1))
+    if started and speech_frames * frame_s < min_speech_s:
+        started = False
+        if stats is not None:
+            stats["reason"] = "too short to be speech"
     if not started:
         return np.zeros(0, dtype=np.float32)
     return np.concatenate(utterance).astype(np.float32)

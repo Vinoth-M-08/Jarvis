@@ -32,13 +32,13 @@ def test_nothing_counts_over_jarvis_before_the_echo_is_learned_but_gaps_do():
     gate = EchoGate()
     assert not _feed(gate, [(0.5, 0.1, 0.95)] * 20)
     gate.reset()
-    assert _feed(gate, [(0.05, 0.0, 0.9)] * 10)           # between sentences: any speech is you
+    assert _feed(gate, [(0.05, 0.0, 0.9)] * 16)           # between sentences: any speech is you
 
 
 def test_headphones_any_speech_counts():
     gate = EchoGate()
     _feed(gate, [(0.001, 0.1, 0.1)] * 60)                 # almost no echo
-    assert _feed(gate, [(0.04, 0.1, 0.9)] * 10)
+    assert _feed(gate, [(0.04, 0.1, 0.9)] * 16)
 
 
 def test_a_short_word_is_not_enough():

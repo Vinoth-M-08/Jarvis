@@ -28,10 +28,10 @@ from jarvis.wake import listen_for_wake_word
 from jarvis.stt import record_utterance, transcribe_audio, set_abort_event, has_speech
 from jarvis import stt
 from jarvis.apply.service import ApplyService, END_WORDS, SKIP_WORDS, TYPE_IT, find_resume_files, speakable
-from jarvis.conversation import (after_name, is_filler, is_goodbye, is_sleep_command, is_wake_only,
+from jarvis.conversation import (after_name, is_filler, is_goodbye, is_own_echo, is_sleep_command, is_wake_only,
                                  mentions_name, strip_wake_words)
 from jarvis.tts import speak, is_speaking, stop_speaking, SpeechStream, prepare_phrases, own_voice_audible
-from jarvis.tts import playback_level
+from jarvis.tts import playback_level, play_sound, recently_said
 from jarvis.barge_in import BargeIn
 from jarvis.overlay import Overlay
 from jarvis.session_lock import guard as lock_guard
@@ -541,9 +541,7 @@ _THINKING_BEEP = _tone((600, 0.08), volume=0.18)         # "got it, working on i
 
 def _play_sound(sound: np.ndarray, wait: bool = True) -> None:
     try:
-        sd.play(sound, samplerate=24000)
-        if wait:
-            sd.wait()
+        play_sound(sound, wait)       # through tts's audio lock (thread-safe)
     except Exception:
         pass
 
@@ -903,6 +901,9 @@ def _on_barge_in_heard(text: str) -> None:
     if lock_guard.locked or not request or is_filler(request):
         print(f"[Jarvis] (ignored {text!r})")
         return
+    if is_own_echo(request, recently_said(30)):
+        print(f"[Barge-in] That was my own voice, not you: ignored {text!r}")
+        return
     _interruptions.append((request, time.time()))
     if _busy_count > 0:
         abort_all()        # still working on the old request: drop it, yours comes first
@@ -916,7 +917,8 @@ def _next_interruption() -> tuple[str, float] | None:
 overlay = Overlay(speaking=is_speaking, level=playback_level, locked=lambda: lock_guard.locked)
 
 barge_in = BargeIn(on_interrupt=_on_barge_in, on_heard=_on_barge_in_heard, transcribe=transcribe_audio,
-                   reference=playback_level, vad_factory=stt.separate_vad_prob,
+                   reference=lambda: playback_level(window_s=0.6),   # the speakers' echo can come back late
+                   vad_factory=stt.separate_vad_prob,
                    blocked=lambda: lock_guard.locked or is_muted())
 
 
@@ -1621,6 +1623,12 @@ def main() -> None:
 
     from jarvis import console_log
     log_path = console_log.start(Path(_CONFIG_PATH).parent / "data" / "logs")
+    import faulthandler                   # a crash inside a C library (audio, GPU) still says where it was
+    global _crash_log
+    _crash_log = open(Path(log_path).parent / "crash.log", "a", encoding="utf-8")
+    _crash_log.write(f"\n===== Jarvis started {datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
+    _crash_log.flush()
+    faulthandler.enable(file=_crash_log, all_threads=True)
     print(f"[Jarvis] Starting up... (console also saved to {log_path})")
     print("[Jarvis] Keys: Esc = stop | F2 = type | INSERT = mute/unmute")
 
